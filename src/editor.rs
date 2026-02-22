@@ -54,7 +54,7 @@ You have two actions:
    {"action": "write_file", "path": "src/foo.rs", "content": "full file contents here"}
 
 2. ReplaceRange — replace lines in an existing file (1-indexed, inclusive):
-   {"action": "replace_range", "path": "src/foo.rs", "start": 10, "end": 15, "content": "replacement lines"}
+   {"action": "replace_range", "path": "src/foo.rs", "start_line": 10, "end_line": 15, "content": "replacement lines"}
 
 Rules:
 - All paths must be relative. No absolute paths, no "..".
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn create_edits_replace_range() {
         let provider = FakeProvider {
-            response: r#"{"edits":[{"action":"replace_range","path":"src/foo.rs","start":1,"end":3,"content":"new lines"}]}"#.into(),
+            response: r#"{"edits":[{"action":"replace_range","path":"src/foo.rs","start_line":1,"end_line":3,"content":"new lines"}]}"#.into(),
         };
         let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 1);
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn create_edits_with_markdown_fences() {
         let provider = FakeProvider {
-            response: "```json\n{\"edits\":[{\"action\":\"WriteFile\",\"path\":\"src/foo.rs\",\"content\":\"hello\"}]}\n```".into(),
+            response: "```json\n{\"edits\":[{\"action\":\"write_file\",\"path\":\"src/foo.rs\",\"content\":\"hello\"}]}\n```".into(),
         };
         let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 1);
@@ -200,7 +200,7 @@ mod tests {
         let provider = FakeProvider {
             response: r#"{"edits":[
                 {"action":"write_file","path":"src/new.rs","content":"mod new;"},
-                {"action":"replace_range","path":"src/main.rs","start":1,"end":1,"content":"mod new;"}
+                {"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"mod new;"}
             ]}"#.into(),
         };
         let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
