@@ -1,4 +1,5 @@
 # Tod
+<img width="1536" height="1024" alt="ChatGPT Image Feb 22, 2026, 01_15_18 AM" src="https://github.com/user-attachments/assets/423f4e49-b2cb-4fa3-8463-1f9e9f71cb6e" />
 
 A minimal Rust coding agent. Give it a goal, it plans the work, writes the edits, runs the tests, and iterates until the build is green.
 
