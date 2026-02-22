@@ -37,6 +37,11 @@ pub struct RunConfig {
 
     /// If true, validate and log edits but don't write to disk or run cargo.
     pub dry_run: bool,
+
+    /// Max bytes of runner output (compiler errors, test failures) to keep.
+    /// Truncated output is snapped to the nearest line boundary.
+    /// Keeps context budget sane for the fixer LLM call.
+    pub max_runner_output_bytes: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +56,7 @@ impl Default for RunConfig {
             max_iterations_per_step: 5,
             max_total_iterations: 25,
             dry_run: false,
+            max_runner_output_bytes: 4096,
         }
     }
 }
@@ -70,6 +76,7 @@ mod tests {
         assert!(!cfg.dry_run);
         assert!(cfg.max_iterations_per_step > 0);
         assert!(cfg.max_total_iterations >= cfg.max_iterations_per_step);
+        assert_eq!(cfg.max_runner_output_bytes, 4096);
     }
 
     #[test]

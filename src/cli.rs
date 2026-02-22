@@ -83,6 +83,7 @@ impl Command {
                     max_iterations_per_step: max_iters,
                     max_total_iterations: max_iters * 5,
                     dry_run,
+                    ..RunConfig::default()
                 };
                 Some((goal, config))
             }
@@ -172,6 +173,7 @@ mod tests {
         assert_eq!(config.max_iterations_per_step, 8);
         assert_eq!(config.max_total_iterations, 40);
         assert!(!config.dry_run);
+        assert_eq!(config.max_runner_output_bytes, 4096);
     }
 
     #[test]
