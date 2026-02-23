@@ -92,14 +92,27 @@ impl LlmProvider for AnthropicProvider {
         let text = response_body["content"][0]["text"]
             .as_str()
             .ok_or_else(|| {
+                let dump = response_body.to_string();
+                let preview = safe_preview(&dump, 200);
                 LlmError::UnexpectedResponse(format!(
-                    "no text in content block: {}",
-                    &response_body.to_string()[..response_body.to_string().len().min(200)]
+                    "no text in content block: {preview}"
                 ))
             })?;
 
         Ok(text.to_string())
     }
+}
+
+/// Truncate a string for error messages without panicking on UTF-8 boundaries.
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ---------------------------------------------------------------------------

@@ -61,10 +61,35 @@ Rules:
 - ReplaceRange lines are 1-indexed. start must be >= 1 and start <= end.
 - Prefer ReplaceRange for small changes to existing files.
 - Use WriteFile for new files or complete rewrites.
+- File contents are shown with numbered lines: "   N | code". Use these numbers for ReplaceRange.
+- Maximum 20 edits per batch, maximum 512 KiB content per edit.
 - Respond with ONLY a JSON object matching this schema, no other text:
 
 {"edits": [ ... ]}
 "#;
+
+// ---------------------------------------------------------------------------
+// File context formatting
+// ---------------------------------------------------------------------------
+
+/// Format file contents with numbered lines for the LLM.
+///
+/// Produces output like:
+/// ```text
+/// === src/main.rs ===
+///    1 | fn main() {
+///    2 |     println!("hello");
+///    3 | }
+/// ```
+///
+/// The loop calls this for each file before passing context to the editor.
+pub fn format_file_context(path: &str, content: &str) -> String {
+    let mut out = format!("=== {path} ===\n");
+    for (i, line) in content.lines().enumerate() {
+        out.push_str(&format!("{:4} | {line}\n", i + 1));
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Core function
@@ -89,7 +114,7 @@ pub fn create_edits(
 
     let raw = provider.complete(SYSTEM_PROMPT, &user_msg)?;
 
-    let batch = extract_json(&raw).map_err(EditError::Parse)?;
+    let batch = extract_json::<EditBatch>(&raw).map_err(EditError::Parse)?;
 
     validate_batch(&batch, sandbox_root)?;
 
@@ -205,5 +230,13 @@ mod tests {
         };
         let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 2);
+    }
+    #[test]
+    fn format_file_context_numbers_lines() {
+        let result = format_file_context("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
+        assert!(result.starts_with("=== src/main.rs ===\n"));
+        assert!(result.contains("   1 | fn main() {"));
+        assert!(result.contains("   2 |     println!(\"hi\");"));
+        assert!(result.contains("   3 | }"));
     }
 }

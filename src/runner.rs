@@ -116,14 +116,9 @@ fn apply_single(edit: &EditAction, sandbox_root: &Path) -> Result<(), ApplyError
             let start_idx = start_line - 1; // 1-indexed → 0-indexed
             let end_idx = *end_line; // inclusive end → exclusive for drain
 
-            // Remove the target range
-            lines.drain(start_idx..end_idx);
-
-            // Insert replacement lines at the same position
+            // Replace the target range in one operation
             let replacement_lines: Vec<&str> = content.lines().collect();
-            for (i, line) in replacement_lines.iter().enumerate() {
-                lines.insert(start_idx + i, line);
-            }
+            lines.splice(start_idx..end_idx, replacement_lines);
 
             let result = lines.join("\n");
             // Preserve trailing newline if original had one
@@ -216,25 +211,24 @@ fn merge_output(stdout: &[u8], stderr: &[u8]) -> String {
 ///
 /// If the output fits, returns it unchanged.
 /// If truncation is needed, cuts at the last newline before the cap.
+/// Works on raw bytes to avoid panicking on multi-byte UTF-8 boundaries.
 fn truncate_output(raw: &str, max_bytes: usize) -> String {
     if raw.len() <= max_bytes {
         return raw.to_string();
     }
 
+    let bytes = raw.as_bytes();
+
     // Find last newline at or before the cap
-    let cut = match raw[..max_bytes].rfind('\n') {
+    let cut = match bytes[..max_bytes].iter().rposition(|&b| b == b'\n') {
         Some(pos) => pos,
-        None => max_bytes, // no newline found — hard cut (shouldn't happen with compiler output)
+        None => max_bytes, // no newline — hard cut
     };
 
+    let kept = String::from_utf8_lossy(&bytes[..cut]);
     let truncated_bytes = raw.len() - cut;
-    format!(
-        "{}\n\n... [truncated {} bytes] ...",
-        &raw[..cut],
-        truncated_bytes
-    )
+    format!("{kept}\n\n... [truncated {truncated_bytes} bytes] ...")
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -245,30 +239,42 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use std::ops::Deref;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
-    /// Create a unique temp directory per test for isolation.
-    fn temp_sandbox() -> PathBuf {
-        let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "tod_test_{}_{id}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// RAII temp directory — cleaned up on drop (even on panic).
+    struct TempSandbox(PathBuf);
+
+    impl TempSandbox {
+        fn new() -> Self {
+            let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "tod_test_{}_{id}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
     }
 
-    fn cleanup(dir: &Path) {
-        let _ = fs::remove_dir_all(dir);
+    impl Deref for TempSandbox {
+        type Target = Path;
+        fn deref(&self) -> &Path { &self.0 }
+    }
+
+    impl Drop for TempSandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     // -- Edit application: WriteFile -------------------------------------
 
     #[test]
     fn write_file_creates_file() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let batch = EditBatch {
             edits: vec![EditAction::WriteFile {
                 path: "hello.txt".into(),
@@ -279,12 +285,12 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let content = fs::read_to_string(sandbox.join("hello.txt")).unwrap();
         assert_eq!(content, "hello world");
-        cleanup(&sandbox);
+        
     }
 
     #[test]
     fn write_file_creates_parent_dirs() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let batch = EditBatch {
             edits: vec![EditAction::WriteFile {
                 path: "src/deeply/nested/mod.rs".into(),
@@ -294,12 +300,12 @@ mod tests {
 
         apply_edits(&batch, &sandbox).unwrap();
         assert!(sandbox.join("src/deeply/nested/mod.rs").exists());
-        cleanup(&sandbox);
+        
     }
 
     #[test]
     fn write_file_overwrites_existing() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let target = sandbox.join("overwrite.txt");
         fs::write(&target, "old content").unwrap();
 
@@ -312,14 +318,14 @@ mod tests {
 
         apply_edits(&batch, &sandbox).unwrap();
         assert_eq!(fs::read_to_string(target).unwrap(), "new content");
-        cleanup(&sandbox);
+        
     }
 
     // -- Edit application: ReplaceRange ----------------------------------
 
     #[test]
     fn replace_range_single_line() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let target = sandbox.join("lines.txt");
         fs::write(&target, "line1\nline2\nline3\n").unwrap();
 
@@ -335,12 +341,12 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let result = fs::read_to_string(target).unwrap();
         assert_eq!(result, "line1\nreplaced\nline3\n");
-        cleanup(&sandbox);
+        
     }
 
     #[test]
     fn replace_range_multiple_lines() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let target = sandbox.join("multi.txt");
         fs::write(&target, "a\nb\nc\nd\ne\n").unwrap();
 
@@ -356,12 +362,12 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let result = fs::read_to_string(target).unwrap();
         assert_eq!(result, "a\nX\nY\ne\n");
-        cleanup(&sandbox);
+        
     }
 
     #[test]
     fn replace_range_out_of_bounds() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let target = sandbox.join("short.txt");
         fs::write(&target, "one\ntwo\n").unwrap();
 
@@ -376,12 +382,12 @@ mod tests {
 
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::RangeOutOfBounds { .. })));
-        cleanup(&sandbox);
+        
     }
 
     #[test]
     fn replace_range_preserves_trailing_newline() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let target = sandbox.join("trailing.txt");
         fs::write(&target, "a\nb\nc\n").unwrap();
 
@@ -398,14 +404,14 @@ mod tests {
         let result = fs::read_to_string(target).unwrap();
         assert!(result.ends_with('\n'));
         assert_eq!(result, "a\nB\nc\n");
-        cleanup(&sandbox);
+        
     }
 
     // -- Edit application: read error ------------------------------------
 
     #[test]
     fn replace_on_missing_file_fails() {
-        let sandbox = temp_sandbox();
+        let sandbox = TempSandbox::new();
         let batch = EditBatch {
             edits: vec![EditAction::ReplaceRange {
                 path: "nonexistent.rs".into(),
@@ -417,7 +423,7 @@ mod tests {
 
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::Read { .. })));
-        cleanup(&sandbox);
+        
     }
 
     // -- Truncation -------------------------------------------------------
@@ -449,6 +455,16 @@ mod tests {
     fn exact_limit_no_truncation() {
         let input = "exactly";
         assert_eq!(truncate_output(input, 7), "exactly");
+    }
+
+    #[test]
+    fn truncation_handles_multibyte_utf8() {
+        // '€' is 3 bytes (E2 82 AC). Build a string where the byte cap
+        // would land inside '€' if we naively sliced &str.
+        let input = "abc\n€€€€€€€€€€\nmore stuff\n";
+        let result = truncate_output(input, 6);
+        assert!(result.contains("truncated"));
+        // Must not panic — that's the real test.
     }
 
     // -- Merge output -----------------------------------------------------

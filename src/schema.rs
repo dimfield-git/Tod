@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -216,36 +217,35 @@ pub fn validate_batch(batch: &EditBatch, sandbox_root: &Path) -> Result<(), Vali
 /// 1. Direct parse of the full string
 /// 2. Strip ```json ... ``` fences, parse inner content
 /// 3. Find first `{` and last `}`, parse that substring
-pub fn extract_json(raw: &str) -> Result<EditBatch, String> {
+pub fn extract_json<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
     let trimmed = raw.trim();
 
     // Attempt 1: direct parse
-    if let Ok(batch) = serde_json::from_str::<EditBatch>(trimmed) {
-        return Ok(batch);
+    if let Ok(val) = serde_json::from_str::<T>(trimmed) {
+        return Ok(val);
     }
 
     // Attempt 2: strip markdown fences
     let stripped = strip_markdown_fences(trimmed);
-    if let Ok(batch) = serde_json::from_str::<EditBatch>(&stripped) {
-        return Ok(batch);
+    if let Ok(val) = serde_json::from_str::<T>(&stripped) {
+        return Ok(val);
     }
 
     // Attempt 3: find first { and last }
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
         if start < end {
             let slice = &trimmed[start..=end];
-            if let Ok(batch) = serde_json::from_str::<EditBatch>(slice) {
-                return Ok(batch);
+            if let Ok(val) = serde_json::from_str::<T>(slice) {
+                return Ok(val);
             }
         }
     }
 
     Err(format!(
-        "Failed to extract valid EditBatch JSON from LLM response. Raw (first 200 chars): {}",
-        &trimmed[..trimmed.len().min(200)]
+        "Failed to extract JSON from LLM response. Raw (first 200 chars): {}",
+        safe_preview(trimmed, 200)
     ))
 }
-
 /// Strip markdown code fences from a string.
 fn strip_markdown_fences(s: &str) -> String {
     let mut lines: Vec<&str> = s.lines().collect();
@@ -284,6 +284,18 @@ fn normalize_lexical(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Truncate a string for error messages without panicking on UTF-8 boundaries.
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +523,7 @@ mod tests {
     #[test]
     fn extract_clean_json() {
         let raw = r#"{"edits":[{"action":"write_file","path":"a.rs","content":"x"}]}"#;
-        assert!(extract_json(raw).is_ok());
+        assert!(extract_json::<EditBatch>(raw).is_ok());
     }
 
     #[test]
@@ -519,7 +531,7 @@ mod tests {
         let raw = r#"```json
 {"edits":[{"action":"write_file","path":"a.rs","content":"x"}]}
 ```"#;
-        assert!(extract_json(raw).is_ok());
+        assert!(extract_json::<EditBatch>(raw).is_ok());
     }
 
     #[test]
@@ -527,12 +539,12 @@ mod tests {
         let raw = r#"Here is the edit plan:
 {"edits":[{"action":"write_file","path":"a.rs","content":"x"}]}
 Hope that helps!"#;
-        assert!(extract_json(raw).is_ok());
+        assert!(extract_json::<EditBatch>(raw).is_ok());
     }
 
     #[test]
     fn extract_fails_on_total_garbage() {
         let raw = "I don't know how to do that, sorry!";
-        assert!(extract_json(raw).is_err());
+        assert!(extract_json::<EditBatch>(raw).is_err());
     }
 }
