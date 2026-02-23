@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::llm::{LlmError, LlmProvider};
@@ -8,7 +8,7 @@ use crate::schema::extract_json;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
     /// What this step accomplishes.
     pub description: String,
@@ -16,7 +16,7 @@ pub struct PlanStep {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub steps: Vec<PlanStep>,
 }

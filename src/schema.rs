@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ const MAX_ACTIONS_PER_BATCH: usize = 20;
 ///
 /// Deserialized directly from the JSON the model returns.
 /// Every variant carries a `path` relative to the project root.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action")]
 pub enum EditAction {
     /// Overwrite (or create) an entire file.
@@ -41,7 +41,7 @@ pub enum EditAction {
 }
 
 /// Wrapper for a batch of edits — what the LLM returns per iteration.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EditBatch {
     pub edits: Vec<EditAction>,
 }

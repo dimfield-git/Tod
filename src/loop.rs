@@ -221,6 +221,7 @@ pub fn run(
         while state.step_state.attempt < state.max_iterations_per_step {
             // --- Global cap guard ---
             if state.total_iterations >= state.max_total_iterations {
+                state.checkpoint(config);
                 return Err(LoopError::TotalIterationCap {
                     max_total_iterations: state.max_total_iterations,
                 });
@@ -285,6 +286,8 @@ pub fn run(
                     state.checkpoint(config);
                 }
                 ReviewDecision::Abort { reason } => {
+                    // Checkpoint: end of iteration (abort).
+                    state.checkpoint(config);
                     return Err(LoopError::Aborted {
                         step_index: state.step_index,
                         reason,
@@ -294,6 +297,7 @@ pub fn run(
         }
 
         if !step_succeeded {
+            state.checkpoint(config);
             return Err(LoopError::Aborted {
                 step_index: state.step_index,
                 reason: "step did not reach success within per-step cap".to_string(),
@@ -372,7 +376,7 @@ fn collect_paths(
 
         if ty.is_dir() {
             let name = entry.file_name();
-            if name == ".git" || name == "target" {
+            if name == ".git" || name == "target" || name == ".tod" {
                 continue;
             }
             collect_paths(root, &path, out, depth + 1)?;
