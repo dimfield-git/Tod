@@ -42,7 +42,7 @@ pub enum Command {
         strict: bool,
 
         /// Max fix iterations per plan step.
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 5, value_parser = parse_max_iters)]
         max_iters: usize,
 
         /// Validate and log edits without writing to disk.
@@ -81,7 +81,7 @@ impl Command {
                         RunMode::Default
                     },
                     max_iterations_per_step: max_iters,
-                    max_total_iterations: max_iters * 5,
+                    max_total_iterations: max_iters.saturating_mul(5),
                     dry_run,
                     ..RunConfig::default()
                 };
@@ -90,6 +90,16 @@ impl Command {
             _ => None,
         }
     }
+}
+
+fn parse_max_iters(raw: &str) -> Result<usize, String> {
+    let parsed: usize = raw
+        .parse()
+        .map_err(|_| format!("invalid integer for --max-iters: {raw}"))?;
+    if parsed == 0 {
+        return Err("--max-iters must be >= 1".to_string());
+    }
+    Ok(parsed)
 }
 
 // ---------------------------------------------------------------------------
@@ -180,5 +190,11 @@ mod tests {
     fn non_run_returns_none() {
         let cli = parse(&["agent", "status"]);
         assert!(cli.command.into_run_config().is_none());
+    }
+
+    #[test]
+    fn reject_zero_max_iters() {
+        let result = Cli::try_parse_from(["agent", "run", "--max-iters", "0", "goal"]);
+        assert!(result.is_err());
     }
 }

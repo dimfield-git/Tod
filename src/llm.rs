@@ -77,14 +77,26 @@ impl LlmProvider for AnthropicProvider {
         });
 
         let response = ureq::post("https://api.anthropic.com/v1/messages")
+            .config()
+            .http_status_as_error(false)
+            .build()
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .send_json(&body)
             .map_err(|e: ureq::Error| LlmError::RequestFailed(e.to_string()))?;
 
-        let body_str = response.into_body().read_to_string()
+        let status = response.status().as_u16();
+        let body_str = response
+            .into_body()
+            .read_to_string()
             .map_err(|e: ureq::Error| LlmError::UnexpectedResponse(e.to_string()))?;
+        if status >= 400 {
+            return Err(LlmError::ApiError {
+                status,
+                body: safe_preview(&body_str, 500).to_string(),
+            });
+        }
         let response_body: serde_json::Value = serde_json::from_str(&body_str)
             .map_err(|e| LlmError::UnexpectedResponse(e.to_string()))?;
 
@@ -122,28 +134,51 @@ fn safe_preview(s: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
-    #[test]
-    fn missing_key_returns_error() {
-        // Temporarily unset the key
-        let original = env::var("ANTHROPIC_API_KEY").ok();
-        env::remove_var("ANTHROPIC_API_KEY");
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
-        let result = AnthropicProvider::from_env();
-        assert!(matches!(result, Err(LlmError::MissingApiKey)));
+    struct EnvGuard {
+        original: Option<String>,
+    }
 
-        // Restore if it existed
-        if let Some(key) = original {
-            env::set_var("ANTHROPIC_API_KEY", key);
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                original: env::var("ANTHROPIC_API_KEY").ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => env::set_var("ANTHROPIC_API_KEY", v),
+                None => env::remove_var("ANTHROPIC_API_KEY"),
+            }
         }
     }
 
     #[test]
+    fn missing_key_returns_error() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        env::remove_var("ANTHROPIC_API_KEY");
+
+        let result = AnthropicProvider::from_env();
+        assert!(matches!(result, Err(LlmError::MissingApiKey)));
+    }
+
+    #[test]
     fn provider_builds_with_key() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
         env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
         let provider = AnthropicProvider::from_env();
         assert!(provider.is_ok());
-        env::remove_var("ANTHROPIC_API_KEY");
     }
 
     #[test]

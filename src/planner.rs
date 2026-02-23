@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::path::Path;
 
 use crate::llm::{LlmError, LlmProvider};
 use crate::schema::extract_json;
@@ -28,6 +29,7 @@ pub enum PlanError {
     Parse(String),
     /// Plan came back empty.
     Empty,
+    InvalidStep { index: usize, reason: String },
 }
 
 impl std::fmt::Display for PlanError {
@@ -36,6 +38,9 @@ impl std::fmt::Display for PlanError {
             Self::Llm(e) => write!(f, "llm error: {e}"),
             Self::Parse(msg) => write!(f, "plan parse failed: {msg}"),
             Self::Empty => write!(f, "plan has no steps"),
+            Self::InvalidStep { index, reason } => {
+                write!(f, "invalid plan step {}: {reason}", index + 1)
+            }
         }
     }
 }
@@ -91,8 +96,50 @@ pub fn create_plan(
     if plan.steps.is_empty() {
         return Err(PlanError::Empty);
     }
+    validate_plan(&plan)?;
 
     Ok(plan)
+}
+
+fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
+    for (index, step) in plan.steps.iter().enumerate() {
+        if step.description.trim().is_empty() {
+            return Err(PlanError::InvalidStep {
+                index,
+                reason: "empty description".to_string(),
+            });
+        }
+        if step.files.is_empty() {
+            return Err(PlanError::InvalidStep {
+                index,
+                reason: "step has no files".to_string(),
+            });
+        }
+        for path in &step.files {
+            if path.trim().is_empty() {
+                return Err(PlanError::InvalidStep {
+                    index,
+                    reason: "contains empty file path".to_string(),
+                });
+            }
+            let p = Path::new(path);
+            if p.is_absolute() {
+                return Err(PlanError::InvalidStep {
+                    index,
+                    reason: format!("absolute path not allowed: {path}"),
+                });
+            }
+            if p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(PlanError::InvalidStep {
+                    index,
+                    reason: format!("path traversal not allowed: {path}"),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 
@@ -156,7 +203,57 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ... (create_plan_with_fake_provider, empty_plan_is_rejected, llm_failure_propagates unchanged)
+    #[test]
+    fn create_plan_success() {
+        let provider = FakeProvider {
+            response: r#"{"steps":[{"description":"create module","files":["src/foo.rs"]}]}"#
+                .to_string(),
+        };
+        let plan = create_plan(&provider, "goal", "ctx").unwrap();
+        assert_eq!(plan.steps.len(), 1);
+    }
+
+    #[test]
+    fn create_plan_rejects_empty_step_description() {
+        let provider = FakeProvider {
+            response: r#"{"steps":[{"description":"   ","files":["src/foo.rs"]}]}"#.to_string(),
+        };
+        let result = create_plan(&provider, "goal", "ctx");
+        assert!(matches!(result, Err(PlanError::InvalidStep { .. })));
+    }
+
+    #[test]
+    fn create_plan_rejects_empty_files() {
+        let provider = FakeProvider {
+            response: r#"{"steps":[{"description":"ok","files":[]}]}"#.to_string(),
+        };
+        let result = create_plan(&provider, "goal", "ctx");
+        assert!(matches!(result, Err(PlanError::InvalidStep { .. })));
+    }
+
+    #[test]
+    fn create_plan_rejects_path_traversal() {
+        let provider = FakeProvider {
+            response: r#"{"steps":[{"description":"ok","files":["../escape.rs"]}]}"#.to_string(),
+        };
+        let result = create_plan(&provider, "goal", "ctx");
+        assert!(matches!(result, Err(PlanError::InvalidStep { .. })));
+    }
+
+    #[test]
+    fn empty_plan_is_rejected() {
+        let provider = FakeProvider {
+            response: r#"{"steps":[]}"#.to_string(),
+        };
+        let result = create_plan(&provider, "goal", "ctx");
+        assert!(matches!(result, Err(PlanError::Empty)));
+    }
+
+    #[test]
+    fn llm_failure_propagates_unchanged() {
+        let result = create_plan(&FailProvider, "goal", "ctx");
+        assert!(matches!(result, Err(PlanError::Llm(_))));
+    }
 
     #[test]
     fn multi_step_plan() {

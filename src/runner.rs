@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{RunConfig, RunMode};
@@ -35,6 +36,8 @@ pub enum ApplyError {
         end_line: usize,
         file_lines: usize,
     },
+    NonUtf8 { path: String },
+    Rollback { cause: String },
 }
 
 impl std::fmt::Display for ApplyError {
@@ -53,6 +56,8 @@ impl std::fmt::Display for ApplyError {
                 f,
                 "line range end {end_line} exceeds file length {file_lines} in {path}"
             ),
+            Self::NonUtf8 { path } => write!(f, "file is not valid UTF-8: {path}"),
+            Self::Rollback { cause } => write!(f, "failed to rollback edits: {cause}"),
         }
     }
 }
@@ -68,8 +73,66 @@ impl std::error::Error for ApplyError {}
 /// `sandbox_root` is the project root — all paths in the batch are relative
 /// and have already been validated by `schema::validate_batch`.
 pub fn apply_edits(batch: &EditBatch, sandbox_root: &Path) -> Result<(), ApplyError> {
+    let snapshots = snapshot_touched_files(batch, sandbox_root)?;
+
     for edit in &batch.edits {
-        apply_single(edit, sandbox_root)?;
+        if let Err(apply_error) = apply_single(edit, sandbox_root) {
+            rollback_snapshots(&snapshots)?;
+            return Err(apply_error);
+        }
+    }
+
+    Ok(())
+}
+
+fn snapshot_touched_files(
+    batch: &EditBatch,
+    sandbox_root: &Path,
+) -> Result<HashMap<PathBuf, Option<Vec<u8>>>, ApplyError> {
+    let mut snapshots = HashMap::new();
+    for edit in &batch.edits {
+        let rel = match edit {
+            EditAction::WriteFile { path, .. } => path,
+            EditAction::ReplaceRange { path, .. } => path,
+        };
+        let full = sandbox_root.join(rel);
+        if snapshots.contains_key(&full) {
+            continue;
+        }
+        let original = if full.exists() {
+            Some(fs::read(&full).map_err(|e| ApplyError::Read {
+                path: rel.clone(),
+                cause: e.to_string(),
+            })?)
+        } else {
+            None
+        };
+        snapshots.insert(full, original);
+    }
+    Ok(snapshots)
+}
+
+fn rollback_snapshots(snapshots: &HashMap<PathBuf, Option<Vec<u8>>>) -> Result<(), ApplyError> {
+    for (path, original) in snapshots {
+        match original {
+            Some(bytes) => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| ApplyError::Rollback {
+                        cause: format!("create_dir_all {}: {e}", parent.display()),
+                    })?;
+                }
+                fs::write(path, bytes).map_err(|e| ApplyError::Rollback {
+                    cause: format!("restore {}: {e}", path.display()),
+                })?;
+            }
+            None => {
+                if path.exists() {
+                    fs::remove_file(path).map_err(|e| ApplyError::Rollback {
+                        cause: format!("remove {}: {e}", path.display()),
+                    })?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -96,12 +159,25 @@ fn apply_single(edit: &EditAction, sandbox_root: &Path) -> Result<(), ApplyError
             content,
         } => {
             let full = sandbox_root.join(path);
-            let existing = fs::read_to_string(&full).map_err(|e| ApplyError::Read {
+            let existing_bytes = fs::read(&full).map_err(|e| ApplyError::Read {
                 path: path.clone(),
                 cause: e.to_string(),
             })?;
+            let existing = String::from_utf8(existing_bytes).map_err(|_| ApplyError::NonUtf8 {
+                path: path.clone(),
+            })?;
 
-            let mut lines: Vec<&str> = existing.lines().collect();
+            let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+            let had_trailing_newline = existing.ends_with('\n');
+
+            let normalized_existing = existing.replace("\r\n", "\n");
+            let mut lines: Vec<String> = normalized_existing
+                .split('\n')
+                .map(|line| line.to_string())
+                .collect();
+            if had_trailing_newline {
+                lines.pop();
+            }
 
             // Range is 1-indexed, inclusive both ends.
             // Validation already ensured start >= 1 and start <= end.
@@ -117,13 +193,20 @@ fn apply_single(edit: &EditAction, sandbox_root: &Path) -> Result<(), ApplyError
             let end_idx = *end_line; // inclusive end → exclusive for drain
 
             // Replace the target range in one operation
-            let replacement_lines: Vec<&str> = content.lines().collect();
+            let normalized_content = content.replace("\r\n", "\n");
+            let mut replacement_lines: Vec<String> = normalized_content
+                .split('\n')
+                .map(|line| line.to_string())
+                .collect();
+            if normalized_content.ends_with('\n') {
+                replacement_lines.pop();
+            }
             lines.splice(start_idx..end_idx, replacement_lines);
 
-            let result = lines.join("\n");
+            let result = lines.join(newline);
             // Preserve trailing newline if original had one
-            let result = if existing.ends_with('\n') {
-                format!("{result}\n")
+            let result = if had_trailing_newline {
+                format!("{result}{newline}")
             } else {
                 result
             };
@@ -147,17 +230,7 @@ fn apply_single(edit: &EditAction, sandbox_root: &Path) -> Result<(), ApplyError
 /// or `RunResult::Failure` at the first stage that fails.
 /// Output is truncated to `config.max_runner_output_bytes`.
 pub fn run_pipeline(config: &RunConfig) -> RunResult {
-    let stages: Vec<(&str, Vec<&str>)> = match config.mode {
-        RunMode::Default => vec![
-            ("build", vec!["cargo", "build"]),
-            ("test", vec!["cargo", "test"]),
-        ],
-        RunMode::Strict => vec![
-            ("fmt", vec!["cargo", "fmt", "--all"]),
-            ("clippy", vec!["cargo", "clippy", "--", "-D", "warnings"]),
-            ("test", vec!["cargo", "test"]),
-        ],
-    };
+    let stages = stages_for_mode(config.mode);
 
     for (stage_name, cmd) in &stages {
         let result = Command::new(cmd[0])
@@ -186,6 +259,20 @@ pub fn run_pipeline(config: &RunConfig) -> RunResult {
     }
 
     RunResult::Success
+}
+
+fn stages_for_mode(mode: RunMode) -> Vec<(&'static str, Vec<&'static str>)> {
+    match mode {
+        RunMode::Default => vec![
+            ("build", vec!["cargo", "build"]),
+            ("test", vec!["cargo", "test"]),
+        ],
+        RunMode::Strict => vec![
+            ("fmt", vec!["cargo", "fmt", "--all", "--check"]),
+            ("clippy", vec!["cargo", "clippy", "--", "-D", "warnings"]),
+            ("test", vec!["cargo", "test"]),
+        ],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +494,26 @@ mod tests {
         
     }
 
+    #[test]
+    fn replace_range_preserves_crlf() {
+        let sandbox = TempSandbox::new();
+        let target = sandbox.join("crlf.txt");
+        fs::write(&target, b"a\r\nb\r\nc\r\n").unwrap();
+
+        let batch = EditBatch {
+            edits: vec![EditAction::ReplaceRange {
+                path: "crlf.txt".into(),
+                start_line: 2,
+                end_line: 2,
+                content: "B".into(),
+            }],
+        };
+
+        apply_edits(&batch, &sandbox).unwrap();
+        let bytes = fs::read(&target).unwrap();
+        assert_eq!(bytes, b"a\r\nB\r\nc\r\n");
+    }
+
     // -- Edit application: read error ------------------------------------
 
     #[test]
@@ -424,6 +531,32 @@ mod tests {
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::Read { .. })));
         
+    }
+
+    #[test]
+    fn apply_edits_rolls_back_on_failure() {
+        let sandbox = TempSandbox::new();
+        fs::write(sandbox.join("ok.txt"), "before").unwrap();
+        fs::write(sandbox.join("short.txt"), "x\ny\n").unwrap();
+
+        let batch = EditBatch {
+            edits: vec![
+                EditAction::WriteFile {
+                    path: "ok.txt".into(),
+                    content: "after".into(),
+                },
+                EditAction::ReplaceRange {
+                    path: "short.txt".into(),
+                    start_line: 1,
+                    end_line: 10,
+                    content: "bad".into(),
+                },
+            ],
+        };
+
+        let result = apply_edits(&batch, &sandbox);
+        assert!(matches!(result, Err(ApplyError::RangeOutOfBounds { .. })));
+        assert_eq!(fs::read_to_string(sandbox.join("ok.txt")).unwrap(), "before");
     }
 
     // -- Truncation -------------------------------------------------------
@@ -493,4 +626,14 @@ mod tests {
     // Integration tests for run_pipeline require a real Cargo project.
     // Those belong in tests/ or behind an #[ignore] flag.
     // Here we only test the helper functions.
+
+    #[test]
+    fn strict_mode_uses_fmt_check() {
+        let stages = stages_for_mode(RunMode::Strict);
+        let fmt = stages
+            .iter()
+            .find(|(stage, _)| *stage == "fmt")
+            .expect("fmt stage must exist");
+        assert_eq!(fmt.1, vec!["cargo", "fmt", "--all", "--check"]);
+    }
 }

@@ -1,88 +1,81 @@
 # Tod
 <img width="1536" height="1024" alt="ChatGPT Image Feb 22, 2026, 01_15_18 AM" src="https://github.com/user-attachments/assets/6f44d7c4-0bf3-4198-ab92-cfdf3417d28e" />
 
-A minimal Rust coding agent. Give it a goal, it plans the work, writes the edits, runs the tests, and iterates until the build is green.
+A minimal Rust coding agent. Give it a goal, it plans the work, writes edits, runs checks, and iterates until each step is complete or a cap is reached.
 
 ## How it works
 
 Tod operates as a sequential loop:
 
-```
-goal → planner → editor → runner → reviewer → repeat (or done)
+```text
+goal -> planner -> editor -> runner -> reviewer -> repeat or done
 ```
 
-1. **Planner** — takes a goal and project context, produces an ordered list of concrete steps
-2. **Editor** — takes a single step and current file contents, produces validated file edits (`WriteFile` or `ReplaceRange`)
-3. **Runner** — applies edits to disk, runs `cargo build` / `cargo test` (or `fmt` + `clippy` in strict mode)
-4. **Reviewer** — inspects the result, decides: proceed to next step, retry with error context, or abort
+1. Planner creates ordered implementation steps.
+2. Editor generates JSON edit batches (`write_file`, `replace_range`) for one step.
+3. Runner applies edits and executes quality checks.
+4. Reviewer decides to proceed, retry with error context, or abort.
 
-The LLM never touches the filesystem directly. Every edit is parsed from JSON, validated against a path jail and size limits, then applied by Tod's own code.
+The LLM never touches the filesystem directly. All writes are validated and applied by local Rust code.
 
 ## Architecture
 
-```
+```text
 src/
-  main.rs       — entry point, mod declarations
-  schema.rs     — EditAction enum, EditBatch, validation, JSON extraction
-  config.rs     — RunMode (default/strict), RunConfig, iteration limits
-  cli.rs        — clap-based CLI: init, run, status, resume
-  llm.rs        — LlmProvider trait, AnthropicProvider (blocking HTTP via ureq)
-  planner.rs    — system prompt + Plan/PlanStep types
-  editor.rs     — system prompt + EditBatch generation from plan steps
-  runner.rs     — edit application + cargo pipeline execution
-  reviewer.rs   — pure-logic decision: proceed / retry / abort
-  loop.rs       — orchestration (not yet built)
+  main.rs       entry point and CLI command dispatch
+  loop.rs       orchestration loop and run caps
+  schema.rs     edit schema, JSON extraction, path and batch validation
+  config.rs     run mode and loop/runtime limits
+  cli.rs        clap CLI and RunConfig conversion
+  llm.rs        LlmProvider trait and Anthropic provider
+  planner.rs    plan creation prompt and semantic plan validation
+  editor.rs     edit creation prompt and batch generation
+  runner.rs     transactional edit apply and cargo pipeline execution
+  reviewer.rs   proceed/retry/abort decision logic
 ```
 
-## Design decisions
+## Safety and reliability guarantees
 
-- **Blocking, not async** — the agent loop is sequential. ureq over reqwest, no tokio.
-- **Validation separate from deserialization** — serde checks JSON shape, validation checks safety (path traversal, size limits, range bounds).
-- **LLM never sees the filesystem** — the loop reads files and passes context in; the loop writes edits out.
-- **Sonnet for speed** — fast and cheap enough to iterate. Model is configurable.
-- **No retry in the provider** — retry logic belongs in the loop, not the HTTP layer.
-- **Pure-logic reviewer** — no LLM call. Success → proceed, failure under cap → retry, failure at cap → abort. Keeps it simple, saves tokens.
-- **Truncated runner output** — compiler errors capped at 4 KiB (configurable), snapped to nearest line boundary. Keeps the fixer context clean and focused.
+- Relative-path sandbox checks with traversal rejection.
+- Symlink-aware path escape guard for existing ancestors.
+- Edit batch semantic validation:
+  - duplicate `write_file` to same path rejected
+  - `write_file` + `replace_range` on same path rejected
+  - overlapping `replace_range` segments rejected
+- Transactional edit apply with rollback on failure.
+- Strict mode is non-mutating (`cargo fmt --check`).
+- Loop enforces both per-step and total-iteration caps.
+- Runner output is size-capped before retry feedback.
 
-## Current status
-
-| Module      | Status   | Tests |
-|-------------|----------|-------|
-| schema.rs   | complete | 25    |
-| config.rs   | complete | 2     |
-| cli.rs      | complete | 7     |
-| llm.rs      | complete | 3 (+1 ignored smoke test) |
-| planner.rs  | complete | 8     |
-| editor.rs   | complete | 8     |
-| runner.rs   | complete | 14    |
-| reviewer.rs | complete | 9     |
-| loop.rs     | not started | —  |
-
-77 tests passing, 1 ignored (live API smoke test).
-
-## Usage
+## CLI
 
 ```bash
 # Set your API key
 export ANTHROPIC_API_KEY="sk-..."
 
-# Run tests
-cargo test
-
-# Run the smoke test (requires live API key)
-cargo test smoke_real_api_call -- --ignored
-```
-
-CLI commands (stubs until loop.rs is complete):
-```bash
-cargo run -- init myproject
+# Run the agent
 cargo run -- run --project /path/to/project "your goal here"
-cargo run -- run --strict --dry-run "your goal here"
-cargo run -- status
+
+# Strict checks (fmt --check, clippy -D warnings, test)
+cargo run -- run --strict "your goal here"
+
+# Validate flow without writes or cargo invocations
+cargo run -- run --dry-run "your goal here"
 ```
 
-## Dependencies
+`--max-iters` is validated and must be `>= 1`.
 
-- `serde` / `serde_json` — serialization
-- `clap` — CLI parsing (derive)
-- `ureq` — blocking HTTP client
+`init`, `resume`, and `status` still print placeholders.
+
+## Test and lint
+
+```bash
+cargo test
+cargo clippy -- -D warnings
+```
+
+Current test status: 91 passing, 1 ignored (live API smoke test).
+
+## Change documentation
+
+See `docs/changes-2026-02-23.md` for a detailed breakdown of the loop wiring, safety hardening, and validation updates.

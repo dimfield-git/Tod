@@ -1,5 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,15 @@ pub enum ValidationError {
     ZeroLineIndex { path: String },
     BatchTooLarge { count: usize, max: usize },
     EmptyBatch,
+    DuplicateWritePath { path: String },
+    WriteConflictsWithReplace { path: String },
+    OverlappingReplaceRange {
+        path: String,
+        first_start: usize,
+        first_end: usize,
+        second_start: usize,
+        second_end: usize,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -84,6 +95,25 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "batch has {count} edits, max is {max}")
             }
             Self::EmptyBatch => write!(f, "edit batch is empty"),
+            Self::DuplicateWritePath { path } => {
+                write!(f, "multiple write_file actions target same path: {path}")
+            }
+            Self::WriteConflictsWithReplace { path } => {
+                write!(
+                    f,
+                    "write_file conflicts with replace_range on same path: {path}"
+                )
+            }
+            Self::OverlappingReplaceRange {
+                path,
+                first_start,
+                first_end,
+                second_start,
+                second_end,
+            } => write!(
+                f,
+                "overlapping replace_range for {path}: {first_start}..{first_end} overlaps {second_start}..{second_end}"
+            ),
         }
     }
 }
@@ -132,6 +162,19 @@ pub fn validate_path(raw: &str, sandbox_root: &Path) -> Result<PathBuf, Validati
             path: raw.to_string(),
             resolved: canon_resolved,
         });
+    }
+
+    if let Ok(canon_sandbox_real) = fs::canonicalize(sandbox_root) {
+        if let Some(existing) = nearest_existing_ancestor(&resolved) {
+            if let Ok(existing_real) = fs::canonicalize(existing) {
+                if !existing_real.starts_with(&canon_sandbox_real) {
+                    return Err(ValidationError::PathEscapesSandbox {
+                        path: raw.to_string(),
+                        resolved: existing_real,
+                    });
+                }
+            }
+        }
     }
 
     Ok(resolved)
@@ -203,6 +246,51 @@ pub fn validate_batch(batch: &EditBatch, sandbox_root: &Path) -> Result<(), Vali
     for edit in &batch.edits {
         validate_edit(edit, sandbox_root)?;
     }
+
+    let mut write_paths = HashSet::new();
+    let mut replaced_paths = HashSet::new();
+    let mut replace_ranges: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+
+    for edit in &batch.edits {
+        match edit {
+            EditAction::WriteFile { path, .. } => {
+                if !write_paths.insert(path.as_str()) {
+                    return Err(ValidationError::DuplicateWritePath { path: path.clone() });
+                }
+            }
+            EditAction::ReplaceRange {
+                path,
+                start_line,
+                end_line,
+                ..
+            } => {
+                replaced_paths.insert(path.as_str());
+                let ranges = replace_ranges.entry(path.as_str()).or_default();
+                for (prev_start, prev_end) in ranges.iter().copied() {
+                    let overlaps = !(end_line < &prev_start || start_line > &prev_end);
+                    if overlaps {
+                        return Err(ValidationError::OverlappingReplaceRange {
+                            path: path.clone(),
+                            first_start: prev_start,
+                            first_end: prev_end,
+                            second_start: *start_line,
+                            second_end: *end_line,
+                        });
+                    }
+                }
+                ranges.push((*start_line, *end_line));
+            }
+        }
+    }
+
+    for path in write_paths {
+        if replaced_paths.contains(path) {
+            return Err(ValidationError::WriteConflictsWithReplace {
+                path: path.to_string(),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -284,6 +372,17 @@ fn normalize_lexical(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut current = Some(path);
+    while let Some(p) = current {
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+        current = p.parent();
+    }
+    None
 }
 
 /// Truncate a string for error messages without panicking on UTF-8 boundaries.
@@ -515,6 +614,72 @@ mod tests {
         assert!(matches!(
             validate_batch(&batch, &sandbox()).unwrap_err(),
             ValidationError::PathTraversal { .. }
+        ));
+    }
+
+    #[test]
+    fn reject_duplicate_writes_same_path() {
+        let batch = EditBatch {
+            edits: vec![
+                EditAction::WriteFile {
+                    path: "src/main.rs".into(),
+                    content: "a".into(),
+                },
+                EditAction::WriteFile {
+                    path: "src/main.rs".into(),
+                    content: "b".into(),
+                },
+            ],
+        };
+        assert!(matches!(
+            validate_batch(&batch, &sandbox()).unwrap_err(),
+            ValidationError::DuplicateWritePath { .. }
+        ));
+    }
+
+    #[test]
+    fn reject_write_and_replace_same_path() {
+        let batch = EditBatch {
+            edits: vec![
+                EditAction::WriteFile {
+                    path: "src/lib.rs".into(),
+                    content: "a".into(),
+                },
+                EditAction::ReplaceRange {
+                    path: "src/lib.rs".into(),
+                    start_line: 1,
+                    end_line: 1,
+                    content: "b".into(),
+                },
+            ],
+        };
+        assert!(matches!(
+            validate_batch(&batch, &sandbox()).unwrap_err(),
+            ValidationError::WriteConflictsWithReplace { .. }
+        ));
+    }
+
+    #[test]
+    fn reject_overlapping_replace_ranges() {
+        let batch = EditBatch {
+            edits: vec![
+                EditAction::ReplaceRange {
+                    path: "src/lib.rs".into(),
+                    start_line: 3,
+                    end_line: 5,
+                    content: "a".into(),
+                },
+                EditAction::ReplaceRange {
+                    path: "src/lib.rs".into(),
+                    start_line: 5,
+                    end_line: 7,
+                    content: "b".into(),
+                },
+            ],
+        };
+        assert!(matches!(
+            validate_batch(&batch, &sandbox()).unwrap_err(),
+            ValidationError::OverlappingReplaceRange { .. }
         ));
     }
 
