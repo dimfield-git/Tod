@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::config::RunConfig;
 use crate::editor::{create_edits, format_file_context, EditError};
 use crate::llm::LlmProvider;
-use crate::planner::{create_plan, Plan, PlanError, PlanStep};
+use crate::planner::{create_plan, Plan, PlanError};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
 use crate::schema::{validate_path, EditBatch};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
 // State structs
@@ -63,7 +63,9 @@ fn compute_fingerprint(project_root: &Path) -> Fingerprint {
         if depth > MAX_TREE_DEPTH {
             return;
         }
-        let Ok(reader) = fs::read_dir(dir) else { return };
+        let Ok(reader) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in reader.flatten() {
             let path = entry.path();
             let Ok(ft) = entry.file_type() else { continue };
@@ -74,7 +76,9 @@ fn compute_fingerprint(project_root: &Path) -> Fingerprint {
                 }
                 walk(root, &path, out, depth + 1);
             } else if ft.is_file() {
-                let Ok(rel) = path.strip_prefix(root) else { continue };
+                let Ok(rel) = path.strip_prefix(root) else {
+                    continue;
+                };
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                 out.push((rel.to_string_lossy().to_string(), size));
             }
@@ -128,7 +132,7 @@ pub struct RunnerLog {
 
 /// Plan log written once after planning completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PlanLog {
+pub(crate) struct PlanLog {
     pub run_id: String,
     pub goal: String,
     pub timestamp_utc: String,
@@ -252,9 +256,7 @@ impl RunState {
 
         let (stage, ok, output) = match run_result {
             RunResult::Success => ("success".to_string(), true, String::new()),
-            RunResult::Failure { stage, output } => {
-                (stage.clone(), false, output.clone())
-            }
+            RunResult::Failure { stage, output } => (stage.clone(), false, output.clone()),
         };
 
         let truncated = output.contains("[truncated");
@@ -266,7 +268,12 @@ impl RunState {
             timestamp_utc: chrono::Utc::now().to_rfc3339(),
             run_mode: format!("{:?}", config.mode).to_lowercase(),
             edit_batch: batch.clone(),
-            runner_output: RunnerLog { stage, ok, output, truncated },
+            runner_output: RunnerLog {
+                stage,
+                ok,
+                output,
+                truncated,
+            },
             review_decision: decision.to_string(),
         };
 
@@ -443,39 +450,29 @@ fn run_from_state(
             state.total_iterations += 1;
 
             // --- Build file context, append retry feedback if present ---
-            let mut file_context = build_step_file_context(
-                &config.project_root,
-                &step.files,
-                state.step_index,
-            )?;
+            let mut file_context =
+                build_step_file_context(&config.project_root, &step.files, state.step_index)?;
             if let Some(ctx) = &state.step_state.retry_context {
                 file_context.push_str("\n## Previous runner failure\n");
                 file_context.push_str(ctx);
             }
 
             // --- Generate edits ---
-            let batch = create_edits(
-                provider,
-                &step,
-                &file_context,
-                &config.project_root,
-            )
-            .map_err(|source| LoopError::Edit {
-                step_index: state.step_index,
-                iteration: state.step_state.attempt,
-                source,
-            })?;
+            let batch = create_edits(provider, &step, &file_context, &config.project_root)
+                .map_err(|source| LoopError::Edit {
+                    step_index: state.step_index,
+                    iteration: state.step_state.attempt,
+                    source,
+                })?;
 
             // --- Apply + run (or skip in dry-run) ---
             let run_result = if config.dry_run {
                 RunResult::Success
             } else {
-                apply_edits(&batch, &config.project_root).map_err(|source| {
-                    LoopError::Apply {
-                        step_index: state.step_index,
-                        iteration: state.step_state.attempt,
-                        source,
-                    }
+                apply_edits(&batch, &config.project_root).map_err(|source| LoopError::Apply {
+                    step_index: state.step_index,
+                    iteration: state.step_state.attempt,
+                    source,
                 })?;
                 run_pipeline(config)
             };
@@ -539,11 +536,10 @@ pub fn resume(
 ) -> Result<LoopReport, LoopError> {
     let state_path = config.project_root.join(".tod/state.json");
     let json = fs::read_to_string(&state_path).map_err(|_| LoopError::NoCheckpoint)?;
-    let mut state: RunState =
-        serde_json::from_str(&json).map_err(|e| LoopError::Io {
-            path: state_path.display().to_string(),
-            cause: format!("failed to parse state.json: {e}"),
-        })?;
+    let mut state: RunState = serde_json::from_str(&json).map_err(|e| LoopError::Io {
+        path: state_path.display().to_string(),
+        cause: format!("failed to parse state.json: {e}"),
+    })?;
 
     // Fingerprint check
     let current = compute_fingerprint(&config.project_root);
@@ -557,34 +553,6 @@ pub fn resume(
 
     // Continue the step loop from where we left off
     run_from_state(provider, config, &mut state)
-}
-
-/// Display status of the last run. Returns a formatted string.
-pub fn status(project_root: &std::path::Path) -> Result<String, LoopError> {
-    let state_path = project_root.join(".tod/state.json");
-    let json = fs::read_to_string(&state_path).map_err(|_| LoopError::NoCheckpoint)?;
-    let state: RunState =
-        serde_json::from_str(&json).map_err(|e| LoopError::Io {
-            path: state_path.display().to_string(),
-            cause: format!("failed to parse state.json: {e}"),
-        })?;
-
-    let total_steps = state.plan.steps.len();
-    Ok(format!(
-        "Run:       {}\n\
-         Goal:      {}\n\
-         Progress:  step {}/{} (attempt {})\n\
-         Completed: {} step(s), {} total iteration(s)\n\
-         Logs:      {}",
-        state.run_id,
-        state.goal,
-        state.step_index + 1,
-        total_steps,
-        state.step_state.attempt,
-        state.steps_completed,
-        state.total_iterations,
-        state.log_dir,
-    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -729,6 +697,7 @@ mod tests {
 
     use crate::config::{RunConfig, RunMode};
     use crate::llm::{LlmError, LlmProvider};
+    use crate::planner::PlanStep;
 
     // -- RAII temp directory (Drop guard, consistent with runner.rs) -------
 
@@ -739,10 +708,8 @@ mod tests {
     impl TempSandbox {
         fn new() -> Self {
             let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-            let dir = std::env::temp_dir().join(format!(
-                "tod_loop_test_{}_{id}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("tod_loop_test_{}_{id}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -973,7 +940,10 @@ mod tests {
         state.checkpoint(&config);
 
         let state_path = sandbox.join(".tod/state.json");
-        assert!(state_path.exists(), ".tod/state.json must exist after checkpoint");
+        assert!(
+            state_path.exists(),
+            ".tod/state.json must exist after checkpoint"
+        );
 
         let json = fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1028,7 +998,10 @@ mod tests {
         state.write_plan_log(&config);
 
         let plan_path = sandbox.join(&state.log_dir).join("plan.json");
-        assert!(plan_path.exists(), "plan.json must exist after write_plan_log");
+        assert!(
+            plan_path.exists(),
+            "plan.json must exist after write_plan_log"
+        );
 
         let json = fs::read_to_string(&plan_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1100,7 +1073,11 @@ mod tests {
         let before = compute_fingerprint(&sandbox);
 
         // Change file content (different size)
-        fs::write(sandbox.join("src/main.rs"), "fn main() { println!(\"changed\"); }\n").unwrap();
+        fs::write(
+            sandbox.join("src/main.rs"),
+            "fn main() { println!(\"changed\"); }\n",
+        )
+        .unwrap();
         let after = compute_fingerprint(&sandbox);
 
         assert_ne!(before.hash, after.hash);
@@ -1146,8 +1123,14 @@ mod tests {
         assert_eq!(restored.log_dir, original.log_dir);
         assert_eq!(restored.last_log_path, original.last_log_path);
         assert_eq!(restored.fingerprint.hash, original.fingerprint.hash);
-        assert_eq!(restored.fingerprint.file_count, original.fingerprint.file_count);
-        assert_eq!(restored.fingerprint.total_bytes, original.fingerprint.total_bytes);
+        assert_eq!(
+            restored.fingerprint.file_count,
+            original.fingerprint.file_count
+        );
+        assert_eq!(
+            restored.fingerprint.total_bytes,
+            original.fingerprint.total_bytes
+        );
         assert_eq!(restored.goal, original.goal);
         assert_eq!(restored.step_index, original.step_index);
     }
@@ -1185,10 +1168,6 @@ mod tests {
         // state.json should exist
         let state_path = sandbox.join(".tod/state.json");
         assert!(state_path.exists());
-
-        // Verify status works on the checkpoint
-        let status_output = status(&sandbox).unwrap();
-        assert!(status_output.contains("two steps"));
     }
 
     #[test]
@@ -1212,8 +1191,14 @@ mod tests {
         };
         let plan = Plan {
             steps: vec![
-                PlanStep { description: "s0".into(), files: vec!["src/main.rs".into()] },
-                PlanStep { description: "s1".into(), files: vec!["src/main.rs".into()] },
+                PlanStep {
+                    description: "s0".into(),
+                    files: vec!["src/main.rs".into()],
+                },
+                PlanStep {
+                    description: "s1".into(),
+                    files: vec!["src/main.rs".into()],
+                },
             ],
         };
 
@@ -1227,41 +1212,5 @@ mod tests {
         let provider = QueueProvider::from(vec![]);
         let err = resume(&provider, &config, false).unwrap_err();
         assert!(matches!(err, LoopError::FingerprintMismatch { .. }));
-    }
-
-    // -- Status -----------------------------------------------------------
-
-    #[test]
-    fn status_displays_summary() {
-        let sandbox = TempSandbox::with_main_rs();
-        let config = RunConfig {
-            project_root: sandbox.to_path_buf(),
-            ..RunConfig::default()
-        };
-        let plan = Plan {
-            steps: vec![
-                PlanStep { description: "s0".into(), files: vec!["src/main.rs".into()] },
-                PlanStep { description: "s1".into(), files: vec!["src/main.rs".into()] },
-            ],
-        };
-        let mut state = RunState::new("build the thing".into(), plan, &config);
-        state.steps_completed = 1;
-        state.step_index = 1;
-        state.total_iterations = 3;
-        state.checkpoint(&config);
-
-        let output = status(&sandbox).unwrap();
-        assert!(output.contains(&state.run_id));
-        assert!(output.contains("build the thing"));
-        assert!(output.contains("1 step(s)"));
-        assert!(output.contains("3 total iteration(s)"));
-        assert!(output.contains(&state.log_dir));
-    }
-
-    #[test]
-    fn status_no_checkpoint_fails() {
-        let sandbox = TempSandbox::new();
-        let err = status(&sandbox).unwrap_err();
-        assert!(matches!(err, LoopError::NoCheckpoint));
     }
 }

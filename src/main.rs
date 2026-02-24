@@ -1,12 +1,13 @@
-mod schema;
-mod config;
 mod cli;
-mod llm;
-mod planner;
+mod config;
 mod editor;
-mod runner;
-mod reviewer;
+mod llm;
 mod r#loop;
+mod planner;
+mod reviewer;
+mod runner;
+mod schema;
+mod stats;
 
 use clap::Parser;
 
@@ -73,9 +74,24 @@ fn main() {
                 }
             }
         }
-        Command::Status => {
-            match r#loop::status(std::path::Path::new(".")) {
-                Ok(summary) => println!("{summary}"),
+        Command::Status => match stats::summarize_current(std::path::Path::new(".")) {
+            Ok(summary) => println!("{}", stats::format_run_summary(&summary)),
+            Err(stats::StatsError::NoData) => {
+                eprintln!("no run data found (.tod/state.json missing or logs unavailable)");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
+        Command::Stats { last } => {
+            match stats::summarize_runs(std::path::Path::new(".tod"), last) {
+                Ok(summary) => println!("{}", stats::format_multi_run_summary(&summary, last)),
+                Err(stats::StatsError::NoData) => {
+                    eprintln!("no run history found at .tod/logs/");
+                    std::process::exit(1);
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     std::process::exit(1);

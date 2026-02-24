@@ -63,6 +63,13 @@ pub enum Command {
 
     /// Show the status of the last run.
     Status,
+
+    /// Analyze run history.
+    Stats {
+        /// Number of recent runs to summarize.
+        #[arg(long, default_value = "5")]
+        last: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +152,14 @@ mod tests {
 
     #[test]
     fn parse_run_strict_with_flags() {
-        let cli = parse(&["agent", "run", "--strict", "--max-iters", "10", "fix the bug"]);
+        let cli = parse(&[
+            "agent",
+            "run",
+            "--strict",
+            "--max-iters",
+            "10",
+            "fix the bug",
+        ]);
         match cli.command {
             Command::Run {
                 goal,
@@ -180,6 +194,18 @@ mod tests {
     fn parse_status() {
         let cli = parse(&["agent", "status"]);
         assert!(matches!(cli.command, Command::Status));
+    }
+
+    #[test]
+    fn parse_stats_default() {
+        let cli = parse(&["agent", "stats"]);
+        assert!(matches!(cli.command, Command::Stats { last } if last == 5));
+    }
+
+    #[test]
+    fn parse_stats_with_last() {
+        let cli = parse(&["agent", "stats", "--last", "9"]);
+        assert!(matches!(cli.command, Command::Stats { last } if last == 9));
     }
 
     #[test]
