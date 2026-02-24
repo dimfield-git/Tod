@@ -190,7 +190,9 @@ mod tests {
     #[test]
     fn rejects_path_traversal() {
         let provider = FakeProvider {
-            response: r#"{"edits":[{"action":"write_file","path":"../etc/passwd","content":"bad"}]}"#.into(),
+            response:
+                r#"{"edits":[{"action":"write_file","path":"../etc/passwd","content":"bad"}]}"#
+                    .into(),
         };
         let result = create_edits(&provider, &test_step(), "", &sandbox());
         assert!(matches!(result, Err(EditError::Validation(_))));
@@ -199,7 +201,8 @@ mod tests {
     #[test]
     fn rejects_absolute_path() {
         let provider = FakeProvider {
-            response: r#"{"edits":[{"action":"write_file","path":"/etc/passwd","content":"bad"}]}"#.into(),
+            response: r#"{"edits":[{"action":"write_file","path":"/etc/passwd","content":"bad"}]}"#
+                .into(),
         };
         let result = create_edits(&provider, &test_step(), "", &sandbox());
         assert!(matches!(result, Err(EditError::Validation(_))));

@@ -106,9 +106,7 @@ impl LlmProvider for AnthropicProvider {
             .ok_or_else(|| {
                 let dump = response_body.to_string();
                 let preview = safe_preview(&dump, 200);
-                LlmError::UnexpectedResponse(format!(
-                    "no text in content block: {preview}"
-                ))
+                LlmError::UnexpectedResponse(format!("no text in content block: {preview}"))
             })?;
 
         Ok(text.to_string())
@@ -191,7 +189,8 @@ mod tests {
     #[ignore] // requires live API key
     fn smoke_real_api_call() {
         let provider = AnthropicProvider::from_env().expect("ANTHROPIC_API_KEY must be set");
-        let response = provider.complete("Respond with only the word 'hello'.", "Say hello.")
+        let response = provider
+            .complete("Respond with only the word 'hello'.", "Say hello.")
             .expect("API call failed");
         assert!(response.to_lowercase().contains("hello"), "got: {response}");
     }

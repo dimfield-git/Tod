@@ -25,19 +25,32 @@ pub enum RunResult {
 #[derive(Debug)]
 pub enum ApplyError {
     /// Failed to create parent directories.
-    CreateDir { path: String, cause: String },
+    CreateDir {
+        path: String,
+        cause: String,
+    },
     /// Failed to write a file.
-    Write { path: String, cause: String },
+    Write {
+        path: String,
+        cause: String,
+    },
     /// Failed to read a file for ReplaceRange.
-    Read { path: String, cause: String },
+    Read {
+        path: String,
+        cause: String,
+    },
     /// Line range exceeds actual file length.
     RangeOutOfBounds {
         path: String,
         end_line: usize,
         file_lines: usize,
     },
-    NonUtf8 { path: String },
-    Rollback { cause: String },
+    NonUtf8 {
+        path: String,
+    },
+    Rollback {
+        cause: String,
+    },
 }
 
 impl std::fmt::Display for ApplyError {
@@ -163,11 +176,14 @@ fn apply_single(edit: &EditAction, sandbox_root: &Path) -> Result<(), ApplyError
                 path: path.clone(),
                 cause: e.to_string(),
             })?;
-            let existing = String::from_utf8(existing_bytes).map_err(|_| ApplyError::NonUtf8 {
-                path: path.clone(),
-            })?;
+            let existing = String::from_utf8(existing_bytes)
+                .map_err(|_| ApplyError::NonUtf8 { path: path.clone() })?;
 
-            let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+            let newline = if existing.contains("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
             let had_trailing_newline = existing.ends_with('\n');
 
             let normalized_existing = existing.replace("\r\n", "\n");
@@ -343,10 +359,7 @@ mod tests {
     impl TempSandbox {
         fn new() -> Self {
             let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-            let dir = std::env::temp_dir().join(format!(
-                "tod_test_{}_{id}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("tod_test_{}_{id}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -355,7 +368,9 @@ mod tests {
 
     impl Deref for TempSandbox {
         type Target = Path;
-        fn deref(&self) -> &Path { &self.0 }
+        fn deref(&self) -> &Path {
+            &self.0
+        }
     }
 
     impl Drop for TempSandbox {
@@ -379,7 +394,6 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let content = fs::read_to_string(sandbox.join("hello.txt")).unwrap();
         assert_eq!(content, "hello world");
-        
     }
 
     #[test]
@@ -394,7 +408,6 @@ mod tests {
 
         apply_edits(&batch, &sandbox).unwrap();
         assert!(sandbox.join("src/deeply/nested/mod.rs").exists());
-        
     }
 
     #[test]
@@ -412,7 +425,6 @@ mod tests {
 
         apply_edits(&batch, &sandbox).unwrap();
         assert_eq!(fs::read_to_string(target).unwrap(), "new content");
-        
     }
 
     // -- Edit application: ReplaceRange ----------------------------------
@@ -435,7 +447,6 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let result = fs::read_to_string(target).unwrap();
         assert_eq!(result, "line1\nreplaced\nline3\n");
-        
     }
 
     #[test]
@@ -456,7 +467,6 @@ mod tests {
         apply_edits(&batch, &sandbox).unwrap();
         let result = fs::read_to_string(target).unwrap();
         assert_eq!(result, "a\nX\nY\ne\n");
-        
     }
 
     #[test]
@@ -476,7 +486,6 @@ mod tests {
 
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::RangeOutOfBounds { .. })));
-        
     }
 
     #[test]
@@ -498,7 +507,6 @@ mod tests {
         let result = fs::read_to_string(target).unwrap();
         assert!(result.ends_with('\n'));
         assert_eq!(result, "a\nB\nc\n");
-        
     }
 
     #[test]
@@ -537,7 +545,6 @@ mod tests {
 
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::Read { .. })));
-        
     }
 
     #[test]
@@ -563,7 +570,10 @@ mod tests {
 
         let result = apply_edits(&batch, &sandbox);
         assert!(matches!(result, Err(ApplyError::RangeOutOfBounds { .. })));
-        assert_eq!(fs::read_to_string(sandbox.join("ok.txt")).unwrap(), "before");
+        assert_eq!(
+            fs::read_to_string(sandbox.join("ok.txt")).unwrap(),
+            "before"
+        );
     }
 
     // -- Truncation -------------------------------------------------------
@@ -604,7 +614,10 @@ mod tests {
         let input = "abc\n€€€€€€€€€€\nmore stuff\n";
         let result = truncate_output(input, 6);
         assert!(result.contains("truncated"));
-        assert!(!result.contains('�'), "must not contain replacement characters");
+        assert!(
+            !result.contains('�'),
+            "must not contain replacement characters"
+        );
     }
 
     // -- Merge output -----------------------------------------------------

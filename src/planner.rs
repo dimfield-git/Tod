@@ -29,7 +29,10 @@ pub enum PlanError {
     Parse(String),
     /// Plan came back empty.
     Empty,
-    InvalidStep { index: usize, reason: String },
+    InvalidStep {
+        index: usize,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for PlanError {
@@ -141,10 +144,6 @@ fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
     }
     Ok(())
 }
-
-
-
-
 
 // ---------------------------------------------------------------------------
 // Tests

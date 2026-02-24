@@ -53,17 +53,41 @@ pub struct EditBatch {
 /// Everything that can go wrong with an edit before we touch the filesystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
-    AbsolutePath { path: String },
-    PathTraversal { path: String },
-    PathEscapesSandbox { path: String, resolved: PathBuf },
+    AbsolutePath {
+        path: String,
+    },
+    PathTraversal {
+        path: String,
+    },
+    PathEscapesSandbox {
+        path: String,
+        resolved: PathBuf,
+    },
     EmptyPath,
-    ContentTooLarge { path: String, bytes: usize, max: usize },
-    InvalidRange { path: String, start: usize, end: usize },
-    ZeroLineIndex { path: String },
-    BatchTooLarge { count: usize, max: usize },
+    ContentTooLarge {
+        path: String,
+        bytes: usize,
+        max: usize,
+    },
+    InvalidRange {
+        path: String,
+        start: usize,
+        end: usize,
+    },
+    ZeroLineIndex {
+        path: String,
+    },
+    BatchTooLarge {
+        count: usize,
+        max: usize,
+    },
     EmptyBatch,
-    DuplicateWritePath { path: String },
-    WriteConflictsWithReplace { path: String },
+    DuplicateWritePath {
+        path: String,
+    },
+    WriteConflictsWithReplace {
+        path: String,
+    },
     OverlappingReplaceRange {
         path: String,
         first_start: usize,
@@ -430,19 +454,28 @@ mod tests {
     #[test]
     fn reject_absolute_path() {
         let result = validate_path("/etc/passwd", &sandbox());
-        assert!(matches!(result.unwrap_err(), ValidationError::AbsolutePath { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidationError::AbsolutePath { .. }
+        ));
     }
 
     #[test]
     fn reject_traversal() {
         let result = validate_path("../escape/file.rs", &sandbox());
-        assert!(matches!(result.unwrap_err(), ValidationError::PathTraversal { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidationError::PathTraversal { .. }
+        ));
     }
 
     #[test]
     fn reject_sneaky_traversal() {
         let result = validate_path("src/../../escape.rs", &sandbox());
-        assert!(matches!(result.unwrap_err(), ValidationError::PathTraversal { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidationError::PathTraversal { .. }
+        ));
     }
 
     #[test]
@@ -519,7 +552,9 @@ mod tests {
 
         let batch: EditBatch = serde_json::from_str(json).unwrap();
         assert_eq!(batch.edits.len(), 1);
-        assert!(matches!(&batch.edits[0], EditAction::WriteFile { path, .. } if path == "src/main.rs"));
+        assert!(
+            matches!(&batch.edits[0], EditAction::WriteFile { path, .. } if path == "src/main.rs")
+        );
     }
 
     #[test]
@@ -538,7 +573,14 @@ mod tests {
 
         let batch: EditBatch = serde_json::from_str(json).unwrap();
         assert_eq!(batch.edits.len(), 1);
-        assert!(matches!(&batch.edits[0], EditAction::ReplaceRange { start_line: 5, end_line: 10, .. }));
+        assert!(matches!(
+            &batch.edits[0],
+            EditAction::ReplaceRange {
+                start_line: 5,
+                end_line: 10,
+                ..
+            }
+        ));
     }
 
     #[test]

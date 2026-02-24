@@ -26,11 +26,7 @@ pub enum ReviewDecision {
 /// - `result`: what the runner returned
 /// - `iteration`: current iteration count for this step (1-indexed)
 /// - `max_iterations`: cap from RunConfig
-pub fn review(
-    result: &RunResult,
-    iteration: usize,
-    max_iterations: usize,
-) -> ReviewDecision {
+pub fn review(result: &RunResult, iteration: usize, max_iterations: usize) -> ReviewDecision {
     match result {
         RunResult::Success => ReviewDecision::Proceed,
         RunResult::Failure { stage, output } => {
@@ -42,9 +38,7 @@ pub fn review(
                 }
             } else {
                 ReviewDecision::Retry {
-                    error_context: format!(
-                        "Build/test failed at stage '{stage}':\n{output}"
-                    ),
+                    error_context: format!("Build/test failed at stage '{stage}':\n{output}"),
                 }
             }
         }
