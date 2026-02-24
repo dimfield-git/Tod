@@ -2,15 +2,18 @@
 
 ## Operating Principles
 
-- **Suggest first, then wait.** Propose changes as diffs. Do not apply until approved.
-- **Do not run commands without asking.** Suggest `cargo test` or `cargo clippy` and wait for confirmation.
+- **Suggest first, then wait.** Propose changes as diffs. Do not apply until approved. Always show a diff or exact file/line patch when proposing implementation — no prose-only suggestions.
+- **Do not run commands without asking.** Suggest exact commands and wait for confirmation.
 - Prefer small, reviewable diffs — one logical change per task.
 - Follow existing patterns in the codebase. Do not invent new conventions.
 - Do not refactor, rename, or reorganize unless explicitly asked.
 - Do not add crate dependencies without approval.
+- Do not invent new public functions or types to make something compile. If unsure whether something exists, search the repo first or ask.
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
-- **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next.
+- **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
+- **Priority order:** Pending Fixes → Current Phase (Phase 6: Logging & Reproducibility) → Future phases.
+- **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
 
 ## Repo Identity
 
@@ -18,7 +21,7 @@ Tod is a minimal Rust coding agent that operates from the terminal. It plans wor
 
 **"Done" means:** `cargo test` passes (baseline: 97 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Currently in active development — Phase 6 (logging & reproducibility) is next.
+Linux-only. No GUI dependencies. Currently in active development.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -28,8 +31,9 @@ Core design principle: **"LLM generates, everything else constrains."**
 Build:      cargo build
 Test:       cargo test
 Lint:       cargo clippy -- -D warnings
+Format:     cargo fmt --all --check
+Strict:     cargo fmt --all --check → cargo clippy -- -D warnings → cargo test
 Run:        cargo run -- run --project /path/to/project "goal"
-Strict:     cargo run -- run --strict "goal"
 Dry run:    cargo run -- run --dry-run "goal"
 ```
 
@@ -65,8 +69,10 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 - No global mutable state. All run state lives in `RunState` / `StepState` structs.
 - No async. All LLM calls are blocking via `ureq`. Tokio is explicitly excluded.
 - `SYSTEM_PROMPT` constants in `planner.rs` and `editor.rs` are **read-only**. Do not modify these unless explicitly asked — they are product logic, not ordinary strings.
+- Do not change CLI flag names or semantics without approval.
+- Do not change JSON schema tags (`write_file`, `replace_range`) without approval.
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
-- Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard.
+- Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
 - State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize` for future checkpoint/resume support.
 
 ## Coding Standards
