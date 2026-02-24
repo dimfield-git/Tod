@@ -12,7 +12,7 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current Phase (Phase 7–8: Observability) → Future phases.
+- **Priority order:** Current phase (see `PHASE7.md`) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
 
 ## Repo Identity
@@ -21,7 +21,7 @@ Tod is a minimal Rust coding agent that operates from the terminal. It plans wor
 
 **"Done" means:** `cargo test` passes (baseline: 111 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–6 complete. Phase 7–8 (observability) is next.
+Linux-only. No GUI dependencies. Phases 1–6 complete. Phase 7 (observability) is next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -35,25 +35,10 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 4 | Execution loop — plan → edit → apply → run → review cycle, iteration caps | ✅ Done |
 | 5 | Runner — cargo pipeline execution, transactional edit apply with rollback, strict mode (`fmt --check` + clippy) | ✅ Done |
 | 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
-| 7–8 | Observability | **Next** |
-| 9 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement | Not started |
+| 7 | Observability — read-only stats from structured logs, per-run and cross-run metrics | **Next** |
+| 8 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement | Not started |
 
-### Phase 7–8: Observability
-
-**Goal:** Expose per-run metrics that make agent behavior understandable and debuggable.
-
-**What to surface:**
-- Iterations per step (how many retries before success or abort)
-- Total token usage per run (if available from provider response)
-- Failure causes by stage (build vs test vs clippy)
-- Most frequent correction patterns (what kinds of errors the fixer sees repeatedly)
-- Success/abort ratio across steps
-
-**Constraints:**
-- Consume the structured JSON logs Phase 6 already writes — do not add new log formats
-- Read-only analysis. Observability code must not modify run state or logs
-- Output format TBD (could be CLI summary, could be a report file in `.tod/`)
-- Keep it simple enough to be useful without a dashboard
+**Current phase instructions: see [`PHASE7.md`](PHASE7.md)**
 
 ## Golden Path Commands
 
