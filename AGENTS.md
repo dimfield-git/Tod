@@ -25,6 +25,36 @@ Linux-only. No GUI dependencies. Phases 1–6 complete. Phase 7–8 (observabili
 
 Core design principle: **"LLM generates, everything else constrains."**
 
+## Phases
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | Core architecture skeleton — module layout, core types (`RunConfig`, `EditAction`, `RunState`) | ✅ Done |
+| 2 | JSON edit schema — `WriteFile`/`ReplaceRange` actions, path validation, content size limits | ✅ Done |
+| 3 | LLM layer — `LlmProvider` trait, Anthropic implementation, JSON extraction with fence/preamble handling | ✅ Done |
+| 4 | Execution loop — plan → edit → apply → run → review cycle, iteration caps | ✅ Done |
+| 5 | Runner — cargo pipeline execution, transactional edit apply with rollback, strict mode (`fmt --check` + clippy) | ✅ Done |
+| 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
+| 7–8 | Observability | **Next** |
+| 9 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement | Not started |
+
+### Phase 7–8: Observability
+
+**Goal:** Expose per-run metrics that make agent behavior understandable and debuggable.
+
+**What to surface:**
+- Iterations per step (how many retries before success or abort)
+- Total token usage per run (if available from provider response)
+- Failure causes by stage (build vs test vs clippy)
+- Most frequent correction patterns (what kinds of errors the fixer sees repeatedly)
+- Success/abort ratio across steps
+
+**Constraints:**
+- Consume the structured JSON logs Phase 6 already writes — do not add new log formats
+- Read-only analysis. Observability code must not modify run state or logs
+- Output format TBD (could be CLI summary, could be a report file in `.tod/`)
+- Keep it simple enough to be useful without a dashboard
+
 ## Golden Path Commands
 
 ```

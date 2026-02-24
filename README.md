@@ -90,9 +90,9 @@ cargo run -- run --max-iters 10 "your goal here"
 ### Other commands
 
 ```bash
-cargo run -- init <project_name>   # placeholder
-cargo run -- resume                # placeholder
-cargo run -- status                # placeholder
+cargo run -- resume --project /path/to/project
+cargo run -- resume --project /path/to/project --force
+cargo run -- status --project /path/to/project
 ```
 
 `--max-iters` must be ≥ 1. Total iterations default to 5× per-step cap.
@@ -114,7 +114,17 @@ All mutable state lives in two serializable structs:
 
 **RunState** owns the plan, tracks step progress, and copies config-derived caps so checkpoints are self-contained. **StepState** is nested inside RunState and tracks the current step's attempt counter and retry context. It resets cleanly at each step boundary.
 
-Every exit path — success, retry, abort, or iteration cap — checkpoints before returning. The checkpoint method is currently a stub; Phase 6 will wire it to `.tod/state.json` for logging and resume support.
+Every exit path — success, retry, abort, or iteration cap — checkpoints before returning.
+
+Runtime state and logs are written under the target project:
+
+```text
+<project_root>/.tod/
+  state.json
+  logs/<run_id>/
+    plan.json
+    step_N_attempt_M.json
+```
 
 ---
 
@@ -125,7 +135,7 @@ cargo test
 cargo clippy -- -D warnings
 ```
 
-Current: **97 passing**, 1 ignored (live API smoke test), clippy clean.
+Current baseline: **111 passing**, 1 ignored (live API smoke test), clippy clean.
 
 ---
 
@@ -141,14 +151,15 @@ This is a learning project focused on understanding agent control structures, no
 - Path sandbox with lexical and symlink-aware validation
 - Edit batch semantic validation (duplicates, conflicts, overlaps)
 - Explicit state structs with Serialize/Deserialize
-- Checkpoint stubs at every exit path
+- Checkpointing to `.tod/state.json` on every exit path
+- Per-run logs under `.tod/logs/<run_id>/` (`plan.json`, `step_N_attempt_M.json`)
+- `resume` and `status` commands wired
 - CLI with run mode, iteration caps, dry-run support
 - Blocking LLM provider trait with Anthropic implementation
 
 ### What's next
 
-- **Phase 6:** Logging & reproducibility — wire checkpoints to disk, per-step log files, enable `resume` and `status` commands
-- **Phase 7–8:** Observability — iteration counts, failure causes, correction patterns
+- **Phase 7–8:** Observability — richer iteration metrics, failure categorization, correction-pattern reporting
 - **Future:** Patch mode, git branch isolation, local model support, budget enforcement
 
 ---
