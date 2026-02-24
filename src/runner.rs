@@ -309,10 +309,17 @@ fn truncate_output(raw: &str, max_bytes: usize) -> String {
     // Find last newline at or before the cap
     let cut = match bytes[..max_bytes].iter().rposition(|&b| b == b'\n') {
         Some(pos) => pos,
-        None => max_bytes, // no newline — hard cut
+        None => {
+            // No newline found — back up to a valid UTF-8 char boundary
+            let mut pos = max_bytes;
+            while pos > 0 && !raw.is_char_boundary(pos) {
+                pos -= 1;
+            }
+            pos
+        }
     };
 
-    let kept = String::from_utf8_lossy(&bytes[..cut]);
+    let kept = &raw[..cut];
     let truncated_bytes = raw.len() - cut;
     format!("{kept}\n\n... [truncated {truncated_bytes} bytes] ...")
 }
@@ -597,7 +604,7 @@ mod tests {
         let input = "abc\n€€€€€€€€€€\nmore stuff\n";
         let result = truncate_output(input, 6);
         assert!(result.contains("truncated"));
-        // Must not panic — that's the real test.
+        assert!(!result.contains('�'), "must not contain replacement characters");
     }
 
     // -- Merge output -----------------------------------------------------

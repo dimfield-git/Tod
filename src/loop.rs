@@ -9,7 +9,8 @@ use crate::llm::LlmProvider;
 use crate::planner::{create_plan, Plan, PlanError};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
-use crate::schema::validate_path;
+use crate::schema::{validate_path, EditBatch};
+use sha2::{Sha256, Digest};
 
 // ---------------------------------------------------------------------------
 // State structs
@@ -38,6 +39,103 @@ impl StepState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Workspace fingerprint
+// ---------------------------------------------------------------------------
+
+/// Cheap workspace drift detection.
+///
+/// Hashes sorted `(relative_path, file_size)` pairs for all tracked files,
+/// excluding `target/`, `.git/`, and `.tod/`. No mtime (filesystem-dependent),
+/// no content hashing (too slow for v1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fingerprint {
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub hash: String,
+}
+
+fn compute_fingerprint(project_root: &Path) -> Fingerprint {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+
+    // Reuse the same walk logic as collect_paths, but gather sizes.
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>, depth: usize) {
+        if depth > MAX_TREE_DEPTH {
+            return;
+        }
+        let Ok(reader) = fs::read_dir(dir) else { return };
+        for entry in reader.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                let name = entry.file_name();
+                if name == ".git" || name == "target" || name == ".tod" {
+                    continue;
+                }
+                walk(root, &path, out, depth + 1);
+            } else if ft.is_file() {
+                let Ok(rel) = path.strip_prefix(root) else { continue };
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((rel.to_string_lossy().to_string(), size));
+            }
+        }
+    }
+
+    walk(project_root, project_root, &mut entries, 0);
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let file_count = entries.len();
+    let total_bytes: u64 = entries.iter().map(|(_, s)| s).sum();
+
+    let mut hasher = Sha256::new();
+    for (path, size) in &entries {
+        hasher.update(format!("{path}:{size}\n").as_bytes());
+    }
+    let hash = format!("{:x}", hasher.finalize());
+
+    Fingerprint {
+        file_count,
+        total_bytes,
+        hash,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Log records
+// ---------------------------------------------------------------------------
+
+/// Structured log for a single edit→apply→run→review cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptLog {
+    pub run_id: String,
+    pub step_index: usize,
+    pub attempt: usize,
+    pub timestamp_utc: String,
+    pub run_mode: String,
+    pub edit_batch: EditBatch,
+    pub runner_output: RunnerLog,
+    pub review_decision: String,
+}
+
+/// Structured snapshot of runner output for logging.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerLog {
+    pub stage: String,
+    pub ok: bool,
+    pub output: String,
+    pub truncated: bool,
+}
+
+/// Plan log written once after planning completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlanLog {
+    pub run_id: String,
+    pub goal: String,
+    pub timestamp_utc: String,
+    pub run_mode: String,
+    pub plan: Plan,
+}
+
 /// Run-level state. Owns the plan and tracks progress across all steps.
 ///
 /// Designed to be cheaply serializable (data-only, no handles or references)
@@ -63,10 +161,21 @@ pub struct RunState {
     pub max_iterations_per_step: usize,
     /// Cap: max total iterations across all steps (copied from config).
     pub max_total_iterations: usize,
+    /// Unique identifier for this run (YYYYMMDD_HHMMSS UTC).
+    pub run_id: String,
+    /// Relative path to the log directory for this run.
+    pub log_dir: String,
+    /// Relative path to the last written attempt log file.
+    pub last_log_path: Option<String>,
+    /// Workspace fingerprint at last checkpoint.
+    pub fingerprint: Fingerprint,
 }
 
 impl RunState {
     fn new(goal: String, plan: Plan, config: &RunConfig) -> Self {
+        let now = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        let log_dir = format!(".tod/logs/{now}");
+        let fingerprint = compute_fingerprint(&config.project_root);
         Self {
             goal,
             plan,
@@ -76,6 +185,10 @@ impl RunState {
             total_iterations: 0,
             max_iterations_per_step: config.max_iterations_per_step,
             max_total_iterations: config.max_total_iterations,
+            run_id: now,
+            log_dir,
+            last_log_path: None,
+            fingerprint,
         }
     }
 
@@ -87,11 +200,87 @@ impl RunState {
         }
     }
 
-    /// Write state to the checkpoint location.
+    /// Write state to `.tod/state.json`.
     ///
-    /// Currently a no-op — will be wired to `.agent/run.json` in Phase 6.
-    fn checkpoint(&self, _config: &RunConfig) {
-        // Phase 6: serde_json::to_writer(file, self)
+    /// Best-effort — checkpoint failure never aborts a run.
+    fn checkpoint(&self, config: &RunConfig) {
+        let tod_dir = config.project_root.join(".tod");
+        if fs::create_dir_all(&tod_dir).is_err() {
+            eprintln!("warning: could not create .tod directory");
+            return;
+        }
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => {
+                if let Err(e) = fs::write(tod_dir.join("state.json"), json) {
+                    eprintln!("warning: failed to write checkpoint: {e}");
+                }
+            }
+            Err(e) => eprintln!("warning: failed to serialize checkpoint: {e}"),
+        }
+    }
+
+    /// Write plan.json to the run's log directory. Best-effort.
+    fn write_plan_log(&self, config: &RunConfig) {
+        let dir = config.project_root.join(&self.log_dir);
+        if fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let log = PlanLog {
+            run_id: self.run_id.clone(),
+            goal: self.goal.clone(),
+            timestamp_utc: chrono::Utc::now().to_rfc3339(),
+            run_mode: format!("{:?}", config.mode).to_lowercase(),
+            plan: self.plan.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&log) {
+            let _ = fs::write(dir.join("plan.json"), json);
+        }
+    }
+
+    /// Write a per-attempt log file. Best-effort. Updates `last_log_path`.
+    fn write_attempt_log(
+        &mut self,
+        config: &RunConfig,
+        batch: &EditBatch,
+        run_result: &RunResult,
+        decision: &str,
+    ) {
+        let dir = config.project_root.join(&self.log_dir);
+        if fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+
+        let (stage, ok, output) = match run_result {
+            RunResult::Success => ("success".to_string(), true, String::new()),
+            RunResult::Failure { stage, output } => {
+                (stage.clone(), false, output.clone())
+            }
+        };
+
+        let truncated = output.contains("[truncated");
+
+        let log = AttemptLog {
+            run_id: self.run_id.clone(),
+            step_index: self.step_index,
+            attempt: self.step_state.attempt,
+            timestamp_utc: chrono::Utc::now().to_rfc3339(),
+            run_mode: format!("{:?}", config.mode).to_lowercase(),
+            edit_batch: batch.clone(),
+            runner_output: RunnerLog { stage, ok, output, truncated },
+            review_decision: decision.to_string(),
+        };
+
+        let filename = format!(
+            "step_{}_attempt_{}.json",
+            self.step_index, self.step_state.attempt
+        );
+        let path = format!("{}/{filename}", self.log_dir);
+
+        if let Ok(json) = serde_json::to_string_pretty(&log) {
+            let _ = fs::write(dir.join(&filename), json);
+        }
+
+        self.last_log_path = Some(path);
     }
 }
 
@@ -133,6 +322,11 @@ pub enum LoopError {
     },
     TotalIterationCap {
         max_total_iterations: usize,
+    },
+    NoCheckpoint,
+    FingerprintMismatch {
+        expected_hash: String,
+        actual_hash: String,
     },
 }
 
@@ -179,6 +373,14 @@ impl std::fmt::Display for LoopError {
                 f,
                 "reached total iteration cap: {max_total_iterations}"
             ),
+            Self::NoCheckpoint => write!(f, "no .tod/state.json found — nothing to resume"),
+            Self::FingerprintMismatch {
+                expected_hash,
+                actual_hash,
+            } => write!(
+                f,
+                "workspace has changed since last checkpoint (expected {expected_hash:.8}, got {actual_hash:.8}) — use --force to override"
+            ),
         }
     }
 }
@@ -211,9 +413,19 @@ pub fn run(
 
     let mut state = RunState::new(goal.to_string(), plan, config);
 
-    // Checkpoint: plan created, about to start step 0.
+    // Write plan log and checkpoint: plan created, about to start step 0.
+    state.write_plan_log(config);
     state.checkpoint(config);
 
+    run_from_state(provider, config, &mut state)
+}
+
+/// Shared step loop used by both `run()` and `resume()`.
+fn run_from_state(
+    provider: &dyn LlmProvider,
+    config: &RunConfig,
+    state: &mut RunState,
+) -> Result<LoopReport, LoopError> {
     while state.step_index < state.plan.steps.len() {
         let step = state.plan.steps[state.step_index].clone();
         let mut step_succeeded = false;
@@ -276,17 +488,17 @@ pub fn run(
             ) {
                 ReviewDecision::Proceed => {
                     step_succeeded = true;
-                    // Checkpoint: end of iteration (success).
+                    state.write_attempt_log(config, &batch, &run_result, "proceed");
                     state.checkpoint(config);
                     break;
                 }
                 ReviewDecision::Retry { error_context } => {
+                    state.write_attempt_log(config, &batch, &run_result, "retry");
                     state.step_state.retry_context = Some(error_context);
-                    // Checkpoint: end of iteration (retry).
                     state.checkpoint(config);
                 }
                 ReviewDecision::Abort { reason } => {
-                    // Checkpoint: end of iteration (abort).
+                    state.write_attempt_log(config, &batch, &run_result, "abort");
                     state.checkpoint(config);
                     return Err(LoopError::Aborted {
                         step_index: state.step_index,
@@ -314,6 +526,65 @@ pub fn run(
     }
 
     Ok(state.report())
+}
+
+/// Resume a previously interrupted run from `.tod/state.json`.
+///
+/// Loads the checkpoint, verifies the workspace fingerprint, and continues
+/// the step loop from where it left off. The plan is not regenerated.
+pub fn resume(
+    provider: &dyn LlmProvider,
+    config: &RunConfig,
+    force: bool,
+) -> Result<LoopReport, LoopError> {
+    let state_path = config.project_root.join(".tod/state.json");
+    let json = fs::read_to_string(&state_path).map_err(|_| LoopError::NoCheckpoint)?;
+    let mut state: RunState =
+        serde_json::from_str(&json).map_err(|e| LoopError::Io {
+            path: state_path.display().to_string(),
+            cause: format!("failed to parse state.json: {e}"),
+        })?;
+
+    // Fingerprint check
+    let current = compute_fingerprint(&config.project_root);
+    if current.hash != state.fingerprint.hash && !force {
+        return Err(LoopError::FingerprintMismatch {
+            expected_hash: state.fingerprint.hash.clone(),
+            actual_hash: current.hash,
+        });
+    }
+    state.fingerprint = current;
+
+    // Continue the step loop from where we left off
+    run_from_state(provider, config, &mut state)
+}
+
+/// Display status of the last run. Returns a formatted string.
+pub fn status(project_root: &std::path::Path) -> Result<String, LoopError> {
+    let state_path = project_root.join(".tod/state.json");
+    let json = fs::read_to_string(&state_path).map_err(|_| LoopError::NoCheckpoint)?;
+    let state: RunState =
+        serde_json::from_str(&json).map_err(|e| LoopError::Io {
+            path: state_path.display().to_string(),
+            cause: format!("failed to parse state.json: {e}"),
+        })?;
+
+    let total_steps = state.plan.steps.len();
+    Ok(format!(
+        "Run:       {}\n\
+         Goal:      {}\n\
+         Progress:  step {}/{} (attempt {})\n\
+         Completed: {} step(s), {} total iteration(s)\n\
+         Logs:      {}",
+        state.run_id,
+        state.goal,
+        state.step_index + 1,
+        total_steps,
+        state.step_state.attempt,
+        state.steps_completed,
+        state.total_iterations,
+        state.log_dir,
+    ))
 }
 
 // ---------------------------------------------------------------------------

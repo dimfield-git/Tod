@@ -51,7 +51,15 @@ pub enum Command {
     },
 
     /// Resume the last interrupted run.
-    Resume,
+    Resume {
+        /// Path to the target project root.
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+
+        /// Continue even if workspace fingerprint has changed.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Show the status of the last run.
     Status,

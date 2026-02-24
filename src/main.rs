@@ -46,11 +46,41 @@ fn main() {
         Command::Init { name } => {
             println!("init not implemented yet (requested project: {name})");
         }
-        Command::Resume => {
-            println!("resume not implemented yet");
+        Command::Resume { project, force } => {
+            let provider = match AnthropicProvider::from_env() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("failed to initialize LLM provider: {e}");
+                    std::process::exit(2);
+                }
+            };
+
+            let config = crate::config::RunConfig {
+                project_root: project,
+                ..crate::config::RunConfig::default()
+            };
+
+            match r#loop::resume(&provider, &config, force) {
+                Ok(report) => {
+                    println!(
+                        "completed {} step(s) in {} iteration(s)",
+                        report.steps_completed, report.total_iterations
+                    );
+                }
+                Err(e) => {
+                    eprintln!("resume failed: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Command::Status => {
-            println!("status not implemented yet");
+            match r#loop::status(std::path::Path::new(".")) {
+                Ok(summary) => println!("{summary}"),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
