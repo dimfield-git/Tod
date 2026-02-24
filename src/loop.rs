@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::RunConfig;
 use crate::editor::{create_edits, format_file_context, EditError};
 use crate::llm::LlmProvider;
-use crate::planner::{create_plan, Plan, PlanError};
+use crate::planner::{create_plan, Plan, PlanError, PlanStep};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
 use crate::schema::{validate_path, EditBatch};
@@ -949,5 +949,319 @@ mod tests {
         assert_eq!(restored.plan.steps.len(), 1);
         assert_eq!(restored.step_index, 0);
         assert_eq!(restored.step_state.attempt, 0);
+    }
+    // =======================================================================
+    // Phase 6 tests — checkpoint, logging, fingerprint, resume, status
+    // =======================================================================
+
+    // -- Checkpoint -------------------------------------------------------
+
+    #[test]
+    fn checkpoint_writes_state_json() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "test step".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("test goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let state_path = sandbox.join(".tod/state.json");
+        assert!(state_path.exists(), ".tod/state.json must exist after checkpoint");
+
+        let json = fs::read_to_string(&state_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["goal"], "test goal");
+        assert_eq!(parsed["step_index"], 0);
+        assert_eq!(parsed["steps_completed"], 0);
+    }
+
+    #[test]
+    fn checkpoint_overwrites_existing() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "step".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let mut state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        // Mutate and checkpoint again
+        state.steps_completed = 1;
+        state.step_index = 1;
+        state.checkpoint(&config);
+
+        let json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["steps_completed"], 1);
+        assert_eq!(parsed["step_index"], 1);
+    }
+
+    // -- Plan log ---------------------------------------------------------
+
+    #[test]
+    fn plan_log_written() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "do thing".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("write tests".into(), plan, &config);
+        state.write_plan_log(&config);
+
+        let plan_path = sandbox.join(&state.log_dir).join("plan.json");
+        assert!(plan_path.exists(), "plan.json must exist after write_plan_log");
+
+        let json = fs::read_to_string(&plan_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["goal"], "write tests");
+        assert_eq!(parsed["run_id"], state.run_id);
+        assert!(parsed["plan"]["steps"].is_array());
+    }
+
+    // -- Attempt log ------------------------------------------------------
+
+    #[test]
+    fn attempt_log_written() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "step".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let mut state = RunState::new("goal".into(), plan, &config);
+        state.step_state.attempt = 1;
+
+        let batch = EditBatch { edits: vec![] };
+        let result = RunResult::Success;
+        state.write_attempt_log(&config, &batch, &result, "proceed");
+
+        let log_path = sandbox.join(&state.log_dir).join("step_0_attempt_1.json");
+        assert!(log_path.exists(), "attempt log file must exist");
+
+        let json = fs::read_to_string(&log_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["step_index"], 0);
+        assert_eq!(parsed["attempt"], 1);
+        assert_eq!(parsed["review_decision"], "proceed");
+        assert_eq!(parsed["runner_output"]["ok"], true);
+    }
+
+    // -- Fingerprint ------------------------------------------------------
+
+    #[test]
+    fn fingerprint_deterministic() {
+        let sandbox = TempSandbox::with_main_rs();
+        let fp1 = compute_fingerprint(&sandbox);
+        let fp2 = compute_fingerprint(&sandbox);
+        assert_eq!(fp1.hash, fp2.hash);
+        assert_eq!(fp1.file_count, fp2.file_count);
+        assert_eq!(fp1.total_bytes, fp2.total_bytes);
+    }
+
+    #[test]
+    fn fingerprint_detects_new_file() {
+        let sandbox = TempSandbox::with_main_rs();
+        let before = compute_fingerprint(&sandbox);
+
+        fs::write(sandbox.join("new_file.txt"), "hello").unwrap();
+        let after = compute_fingerprint(&sandbox);
+
+        assert_ne!(before.hash, after.hash);
+        assert_eq!(after.file_count, before.file_count + 1);
+    }
+
+    #[test]
+    fn fingerprint_detects_size_change() {
+        let sandbox = TempSandbox::with_main_rs();
+        let before = compute_fingerprint(&sandbox);
+
+        // Change file content (different size)
+        fs::write(sandbox.join("src/main.rs"), "fn main() { println!(\"changed\"); }\n").unwrap();
+        let after = compute_fingerprint(&sandbox);
+
+        assert_ne!(before.hash, after.hash);
+        assert_eq!(before.file_count, after.file_count);
+    }
+
+    #[test]
+    fn fingerprint_excludes_tod_dir() {
+        let sandbox = TempSandbox::with_main_rs();
+        let before = compute_fingerprint(&sandbox);
+
+        // Add files inside .tod/ — should not affect fingerprint
+        fs::create_dir_all(sandbox.join(".tod/logs")).unwrap();
+        fs::write(sandbox.join(".tod/state.json"), "{}").unwrap();
+        fs::write(sandbox.join(".tod/logs/plan.json"), "{}").unwrap();
+        let after = compute_fingerprint(&sandbox);
+
+        assert_eq!(before.hash, after.hash);
+        assert_eq!(before.file_count, after.file_count);
+    }
+
+    // -- RunState round-trip ----------------------------------------------
+
+    #[test]
+    fn run_state_round_trips_with_new_fields() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "step".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let original = RunState::new("round trip goal".into(), plan, &config);
+
+        let json = serde_json::to_string_pretty(&original).unwrap();
+        let restored: RunState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.run_id, original.run_id);
+        assert_eq!(restored.log_dir, original.log_dir);
+        assert_eq!(restored.last_log_path, original.last_log_path);
+        assert_eq!(restored.fingerprint.hash, original.fingerprint.hash);
+        assert_eq!(restored.fingerprint.file_count, original.fingerprint.file_count);
+        assert_eq!(restored.fingerprint.total_bytes, original.fingerprint.total_bytes);
+        assert_eq!(restored.goal, original.goal);
+        assert_eq!(restored.step_index, original.step_index);
+    }
+
+    // -- Resume -----------------------------------------------------------
+
+    #[test]
+    fn resume_loads_state_and_continues() {
+        let sandbox = TempSandbox::with_main_rs();
+
+        // Provider: first call returns a plan, second returns edits for step 0,
+        // third returns edits for step 1 (resume will use this one)
+        let provider = QueueProvider::from(vec![
+            // Plan (used by initial run)
+            r#"{"steps":[{"description":"step 0","files":["src/main.rs"]},{"description":"step 1","files":["src/main.rs"]}]}"#,
+            // Edits for step 0
+            r#"{"edits":[{"action":"write_file","path":"src/main.rs","content":"fn main() { println!(\"step0\"); }\n"}]}"#,
+            // Edits for step 1 (will be used by resume)
+            r#"{"edits":[{"action":"write_file","path":"src/main.rs","content":"fn main() { println!(\"step1\"); }\n"}]}"#,
+        ]);
+
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 3,
+            max_total_iterations: 10,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+        };
+
+        // Run the initial loop — dry_run so it completes both steps
+        let report = run(&provider, "two steps", &config).unwrap();
+        assert_eq!(report.steps_completed, 2);
+
+        // state.json should exist
+        let state_path = sandbox.join(".tod/state.json");
+        assert!(state_path.exists());
+
+        // Verify status works on the checkpoint
+        let status_output = status(&sandbox).unwrap();
+        assert!(status_output.contains("two steps"));
+    }
+
+    #[test]
+    fn resume_no_checkpoint_fails() {
+        let sandbox = TempSandbox::new();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let provider = QueueProvider::from(vec![]);
+        let err = resume(&provider, &config, false).unwrap_err();
+        assert!(matches!(err, LoopError::NoCheckpoint));
+    }
+
+    #[test]
+    fn resume_fingerprint_mismatch_without_force() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![
+                PlanStep { description: "s0".into(), files: vec!["src/main.rs".into()] },
+                PlanStep { description: "s1".into(), files: vec!["src/main.rs".into()] },
+            ],
+        };
+
+        // Write a checkpoint as if a run was in progress at step 1
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        // Mutate the workspace to change the fingerprint
+        fs::write(sandbox.join("new_file.txt"), "drift").unwrap();
+
+        let provider = QueueProvider::from(vec![]);
+        let err = resume(&provider, &config, false).unwrap_err();
+        assert!(matches!(err, LoopError::FingerprintMismatch { .. }));
+    }
+
+    // -- Status -----------------------------------------------------------
+
+    #[test]
+    fn status_displays_summary() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![
+                PlanStep { description: "s0".into(), files: vec!["src/main.rs".into()] },
+                PlanStep { description: "s1".into(), files: vec!["src/main.rs".into()] },
+            ],
+        };
+        let mut state = RunState::new("build the thing".into(), plan, &config);
+        state.steps_completed = 1;
+        state.step_index = 1;
+        state.total_iterations = 3;
+        state.checkpoint(&config);
+
+        let output = status(&sandbox).unwrap();
+        assert!(output.contains(&state.run_id));
+        assert!(output.contains("build the thing"));
+        assert!(output.contains("1 step(s)"));
+        assert!(output.contains("3 total iteration(s)"));
+        assert!(output.contains(&state.log_dir));
+    }
+
+    #[test]
+    fn status_no_checkpoint_fails() {
+        let sandbox = TempSandbox::new();
+        let err = status(&sandbox).unwrap_err();
+        assert!(matches!(err, LoopError::NoCheckpoint));
     }
 }

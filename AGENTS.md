@@ -12,16 +12,16 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Pending Fixes → Current Phase (Phase 6: Logging & Reproducibility) → Future phases.
+- **Priority order:** Current Phase (Phase 7–8: Observability) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
 
 ## Repo Identity
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 97 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 111 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Currently in active development.
+Linux-only. No GUI dependencies. Phases 1–6 complete. Phase 7–8 (observability) is next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -43,11 +43,11 @@ No external system dependencies beyond a Rust toolchain.
 
 ```
 src/
-  main.rs       Entry point, CLI dispatch, provider init
-  loop.rs       Orchestration, RunState/StepState, context building
+  main.rs       Entry point, CLI dispatch (run, resume, status), provider init
+  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume, status
   schema.rs     EditAction types, JSON extraction, path + batch validation
   config.rs     RunConfig, RunMode — immutable after construction
-  cli.rs        clap derive CLI, argument-to-config conversion
+  cli.rs        clap derive CLI, argument-to-config conversion (resume: --project, --force)
   llm.rs        LlmProvider trait, Anthropic implementation (ureq, blocking)
   planner.rs    Plan creation prompt, plan semantic validation
   editor.rs     Edit creation prompt, format_file_context()
@@ -57,7 +57,18 @@ src/
 docs/
   tod-architecture.html   Interactive module diagram (GitHub Pages)
   loop-design-final.md    Loop design rationale, state struct docs
+  phase6-design.md        Phase 6 design document (logging, checkpoint, resume)
   changes-2026-02-23.md   Detailed change log for loop wiring session
+```
+
+**Runtime output directory** (created by Tod when running against a target project):
+
+```
+<project_root>/.tod/
+  state.json                          RunState checkpoint (overwritten each time)
+  logs/<run_id>/
+    plan.json                         Written once after planning
+    step_N_attempt_M.json             One per edit→apply→run→review cycle
 ```
 
 Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integration test crate yet.
@@ -73,7 +84,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 - Do not change JSON schema tags (`write_file`, `replace_range`) without approval.
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
 - Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
-- State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize` for future checkpoint/resume support.
+- State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json`; resume loads from it. Fingerprint detects workspace drift between runs.
 
 ## Coding Standards
 
@@ -87,24 +98,12 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 
 ## Testing Policy
 
-- Every change must leave `cargo test` at ≥ 97 passing, 0 failing.
+- Every change must leave `cargo test` at ≥ 111 passing, 0 failing.
 - Every new public function gets at least one test.
 - Tests live in `#[cfg(test)] mod tests` at the bottom of each module.
 - Use `TempSandbox` (RAII temp dir with Drop cleanup) for filesystem tests.
 - The one ignored test (`llm.rs` live API smoke) stays ignored in normal runs.
 - No network calls from tests except the ignored smoke test.
-
-## Pending Fixes
-
-These are known issues ready for implementation. Each is a bounded, testable task. **Start here before phase work** — use these to calibrate before taking on structural changes.
-
-1. **`truncate_output` UTF-8 panic** (`runner.rs`) — Current implementation can panic on multi-byte UTF-8 boundaries. Switch to byte-level slicing with `is_char_boundary` fallback. Existing test `truncation_handles_multibyte_utf8` covers the case but verify edge cases.
-
-2. **`ReplaceRange` O(n²)** (`runner.rs`) — The current line replacement uses `drain` + insert loop. Replace with `Vec::splice` for single-pass replacement. Already partially addressed but verify the implementation is truly single-operation.
-
-3. **CRLF preservation loss** (`runner.rs`) — `ReplaceRange` may lose CRLF line endings in some edge cases. Add test coverage for round-trip CRLF fidelity and fix if needed.
-
-4. **Test cleanup Drop guard** (`loop.rs`, `runner.rs`) — Ensure all test `TempSandbox` instances use the RAII Drop pattern consistently. Audit for any `fs::remove_dir_all` calls that should be Drop guards instead.
 
 ## Safety Boundaries
 
@@ -120,3 +119,4 @@ These are known issues ready for implementation. Each is a bounded, testable tas
 - Shell: bash
 - Repo location: `~/Agents/Tod/`
 - LLM provider: Anthropic (Claude) via `ANTHROPIC_API_KEY` env var
+- Key dependencies: `ureq` (HTTP), `serde`/`serde_json` (JSON), `clap` (CLI), `sha2` (fingerprint), `chrono` (timestamps)
