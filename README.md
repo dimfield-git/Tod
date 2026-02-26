@@ -161,6 +161,7 @@ This is a learning project focused on understanding agent control structures, no
 
 - **Phase 7–8:** Observability — richer iteration metrics, failure categorization, correction-pattern reporting
 - **Future:** Patch mode, git branch isolation, local model support, budget enforcement
+<img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/98d8e898-da9f-4e9f-85d3-7bc5eb791dd9" />
 
 ---
 
