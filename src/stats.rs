@@ -40,8 +40,9 @@ pub struct MultiRunSummary {
     pub runs_total: usize,
     pub runs_succeeded: usize,
     pub runs_aborted: usize,
+    pub runs_cap_reached: usize,
     pub avg_attempts: f64,
-    pub most_common_failure_stage: Option<String>,
+    pub most_common_failure_stage: Option<(String, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +262,7 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
     let mut runs_total = 0usize;
     let mut runs_succeeded = 0usize;
     let mut runs_aborted = 0usize;
+    let mut runs_cap_reached = 0usize;
     let mut attempts_total = 0usize;
     let mut failure_counts: HashMap<String, usize> = HashMap::new();
 
@@ -269,10 +271,10 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
         runs_total += 1;
         attempts_total += summary.total_attempts;
 
-        if matches!(summary.outcome, RunOutcome::Success) {
-            runs_succeeded += 1;
-        } else {
-            runs_aborted += 1;
+        match summary.outcome {
+            RunOutcome::Success => runs_succeeded += 1,
+            RunOutcome::Aborted => runs_aborted += 1,
+            RunOutcome::CapReached => runs_cap_reached += 1,
         }
 
         for (stage, count) in summary.failure_stages {
@@ -288,13 +290,13 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
 
     let most_common_failure_stage = failure_counts
         .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        .map(|(stage, count)| format!("{stage} ({count} occurrences)"));
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
 
     Ok(MultiRunSummary {
         runs_total,
         runs_succeeded,
         runs_aborted,
+        runs_cap_reached,
         avg_attempts,
         most_common_failure_stage,
     })
@@ -335,15 +337,21 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
     )
 }
 
-pub fn format_multi_run_summary(summary: &MultiRunSummary, limit: usize) -> String {
-    let failure = summary
-        .most_common_failure_stage
-        .clone()
-        .unwrap_or_else(|| "none".to_string());
+pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
+    let failure = match &summary.most_common_failure_stage {
+        Some((stage, count)) => format!("{stage} ({count} occurrences)"),
+        None => "none".to_string(),
+    };
+
+    let cap_str = if summary.runs_cap_reached > 0 {
+        format!("  Cap reached: {}", summary.runs_cap_reached)
+    } else {
+        String::new()
+    };
 
     format!(
-        "Last {limit} runs:\n  Succeeded: {}  Aborted: {}\n  Avg attempts: {:.1}\n  Most common failure: {}",
-        summary.runs_succeeded, summary.runs_aborted, summary.avg_attempts, failure,
+        "Last {} runs:\n  Succeeded: {}  Aborted: {}{}\n  Avg attempts: {:.1}\n  Most common failure: {}",
+        summary.runs_total, summary.runs_succeeded, summary.runs_aborted, cap_str, summary.avg_attempts, failure,
     )
 }
 
@@ -624,12 +632,10 @@ mod tests {
         let summary = summarize_runs(&sandbox.join(".tod"), 3).unwrap();
         assert_eq!(summary.runs_total, 3);
         assert_eq!(summary.runs_succeeded, 1);
-        assert_eq!(summary.runs_aborted, 2);
+        assert_eq!(summary.runs_aborted, 1);
+        assert_eq!(summary.runs_cap_reached, 1);
         assert!((summary.avg_attempts - (4.0 / 3.0)).abs() < f64::EPSILON);
-        assert_eq!(
-            summary.most_common_failure_stage,
-            Some("build (2 occurrences)".to_string())
-        );
+        assert_eq!(summary.most_common_failure_stage, Some(("build".to_string(), 2)));
     }
 
     #[test]
@@ -641,6 +647,7 @@ mod tests {
         assert_eq!(summary.runs_total, 0);
         assert_eq!(summary.runs_succeeded, 0);
         assert_eq!(summary.runs_aborted, 0);
+        assert_eq!(summary.runs_cap_reached, 0);
         assert_eq!(summary.avg_attempts, 0.0);
         assert_eq!(summary.most_common_failure_stage, None);
     }

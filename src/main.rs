@@ -87,7 +87,7 @@ fn main() {
         },
         Command::Stats { last } => {
             match stats::summarize_runs(std::path::Path::new(".tod"), last) {
-                Ok(summary) => println!("{}", stats::format_multi_run_summary(&summary, last)),
+                Ok(summary) => println!("{}", stats::format_multi_run_summary(&summary)),
                 Err(stats::StatsError::NoData) => {
                     eprintln!("no run history found at .tod/logs/");
                     std::process::exit(1);

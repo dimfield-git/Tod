@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(restored.step_state.attempt, 0);
     }
     // =======================================================================
-    // Phase 6 tests — checkpoint, logging, fingerprint, resume, status
+    // Phase 6 tests — checkpoint, logging, fingerprint, resume
     // =======================================================================
 
     // -- Checkpoint -------------------------------------------------------
