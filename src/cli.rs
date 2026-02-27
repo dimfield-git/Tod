@@ -48,6 +48,10 @@ pub enum Command {
         /// Validate and log edits without writing to disk.
         #[arg(long)]
         dry_run: bool,
+
+        /// Max total tokens (input + output) for the entire run. 0 = no limit.
+        #[arg(long, default_value_t = 0)]
+        max_tokens: u64,
     },
 
     /// Resume the last interrupted run.
@@ -87,6 +91,7 @@ impl Command {
                 strict,
                 max_iters,
                 dry_run,
+                max_tokens,
             } => {
                 let config = RunConfig {
                     project_root: project,
@@ -98,6 +103,7 @@ impl Command {
                     max_iterations_per_step: max_iters,
                     max_total_iterations: max_iters.saturating_mul(5),
                     dry_run,
+                    max_tokens,
                     ..RunConfig::default()
                 };
                 Some((goal, config))
@@ -139,12 +145,14 @@ mod tests {
                 strict,
                 max_iters,
                 dry_run,
+                max_tokens,
                 ..
             } => {
                 assert_eq!(goal, "add a hello world function");
                 assert!(!strict);
                 assert_eq!(max_iters, 5);
                 assert!(!dry_run);
+                assert_eq!(max_tokens, 0);
             }
             other => panic!("expected Run, got {other:?}"),
         }
@@ -218,6 +226,7 @@ mod tests {
         assert_eq!(config.max_total_iterations, 40);
         assert!(!config.dry_run);
         assert_eq!(config.max_runner_output_bytes, 4096);
+        assert_eq!(config.max_tokens, 0);
     }
 
     #[test]

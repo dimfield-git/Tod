@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::llm::{LlmError, LlmProvider};
+use crate::llm::{LlmError, LlmProvider, Usage};
 use crate::planner::PlanStep;
 use crate::schema::{extract_json, validate_batch, EditBatch, ValidationError};
 
@@ -104,7 +104,7 @@ pub fn create_edits(
     step: &PlanStep,
     file_context: &str,
     sandbox_root: &Path,
-) -> Result<EditBatch, EditError> {
+) -> Result<(EditBatch, Option<Usage>), EditError> {
     let user_msg = format!(
         "## Step\n{}\n\n## Files involved\n{}\n\n## Current file contents\n{}",
         step.description,
@@ -112,13 +112,13 @@ pub fn create_edits(
         file_context,
     );
 
-    let raw = provider.complete(SYSTEM_PROMPT, &user_msg)?;
+    let response = provider.complete(SYSTEM_PROMPT, &user_msg)?;
 
-    let batch = extract_json::<EditBatch>(&raw).map_err(EditError::Parse)?;
+    let batch = extract_json::<EditBatch>(&response.text).map_err(EditError::Parse)?;
 
     validate_batch(&batch, sandbox_root)?;
 
-    Ok(batch)
+    Ok((batch, response.usage))
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ pub fn create_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::LlmProvider;
+    use crate::llm::{LlmProvider, LlmResponse};
     use std::path::PathBuf;
 
     struct FakeProvider {
@@ -136,15 +136,18 @@ mod tests {
     }
 
     impl LlmProvider for FakeProvider {
-        fn complete(&self, _system: &str, _user: &str) -> Result<String, LlmError> {
-            Ok(self.response.clone())
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
+            Ok(LlmResponse {
+                text: self.response.clone(),
+                usage: None,
+            })
         }
     }
 
     struct FailProvider;
 
     impl LlmProvider for FailProvider {
-        fn complete(&self, _system: &str, _user: &str) -> Result<String, LlmError> {
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
             Err(LlmError::RequestFailed("fake failure".into()))
         }
     }
@@ -165,7 +168,8 @@ mod tests {
         let provider = FakeProvider {
             response: r#"{"edits":[{"action":"write_file","path":"src/foo.rs","content":"fn main() {}"}]}"#.into(),
         };
-        let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
+        let (batch, usage) = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
+        assert!(usage.is_none());
         assert_eq!(batch.edits.len(), 1);
     }
 
@@ -174,7 +178,7 @@ mod tests {
         let provider = FakeProvider {
             response: r#"{"edits":[{"action":"replace_range","path":"src/foo.rs","start_line":1,"end_line":3,"content":"new lines"}]}"#.into(),
         };
-        let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
+        let (batch, _) = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 1);
     }
 
@@ -183,7 +187,7 @@ mod tests {
         let provider = FakeProvider {
             response: "```json\n{\"edits\":[{\"action\":\"write_file\",\"path\":\"src/foo.rs\",\"content\":\"hello\"}]}\n```".into(),
         };
-        let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
+        let (batch, _) = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 1);
     }
 
@@ -231,7 +235,7 @@ mod tests {
                 {"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"mod new;"}
             ]}"#.into(),
         };
-        let batch = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
+        let (batch, _) = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 2);
     }
     #[test]

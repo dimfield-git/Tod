@@ -29,7 +29,7 @@ pub enum ReviewDecision {
 pub fn review(result: &RunResult, iteration: usize, max_iterations: usize) -> ReviewDecision {
     match result {
         RunResult::Success => ReviewDecision::Proceed,
-        RunResult::Failure { stage, output } => {
+        RunResult::Failure { stage, output, .. } => {
             if iteration >= max_iterations {
                 ReviewDecision::Abort {
                     reason: format!(
@@ -70,6 +70,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "build".into(),
             output: "error[E0308]: mismatched types".into(),
+            truncated: false,
         };
         let decision = review(&result, 1, 5);
         match decision {
@@ -86,6 +87,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "test".into(),
             output: "test failed".into(),
+            truncated: false,
         };
         let decision = review(&result, 5, 5);
         match decision {
@@ -103,6 +105,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "clippy".into(),
             output: "warning promoted to error".into(),
+            truncated: false,
         };
         let decision = review(&result, 6, 5);
         assert!(matches!(decision, ReviewDecision::Abort { .. }));
@@ -113,6 +116,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "build".into(),
             output: "undefined reference".into(),
+            truncated: false,
         };
         let decision = review(&result, 4, 5);
         assert!(matches!(decision, ReviewDecision::Retry { .. }));
@@ -123,6 +127,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "fmt".into(),
             output: "diff detected".into(),
+            truncated: false,
         };
         let decision = review(&result, 1, 3);
         if let ReviewDecision::Retry { error_context } = decision {
@@ -138,6 +143,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "build".into(),
             output: "errors".into(),
+            truncated: false,
         };
         let decision = review(&result, 3, 3);
         if let ReviewDecision::Abort { reason } = decision {
@@ -153,6 +159,7 @@ mod tests {
         let result = RunResult::Failure {
             stage: "build".into(),
             output: "fatal".into(),
+            truncated: false,
         };
         let decision = review(&result, 1, 1);
         assert!(matches!(decision, ReviewDecision::Abort { .. }));

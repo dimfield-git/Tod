@@ -14,7 +14,11 @@ use crate::schema::{EditAction, EditBatch};
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunResult {
     Success,
-    Failure { stage: String, output: String },
+    Failure {
+        stage: String,
+        output: String,
+        truncated: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -258,10 +262,12 @@ pub fn run_pipeline(config: &RunConfig) -> RunResult {
             Ok(output) => {
                 if !output.status.success() {
                     let raw = merge_output(&output.stdout, &output.stderr);
-                    let truncated = truncate_output(&raw, config.max_runner_output_bytes);
+                    let (truncated_output, truncated) =
+                        truncate_output(&raw, config.max_runner_output_bytes);
                     return RunResult::Failure {
                         stage: stage_name.to_string(),
-                        output: truncated,
+                        output: truncated_output,
+                        truncated,
                     };
                 }
             }
@@ -269,6 +275,7 @@ pub fn run_pipeline(config: &RunConfig) -> RunResult {
                 return RunResult::Failure {
                     stage: stage_name.to_string(),
                     output: format!("failed to execute command: {e}"),
+                    truncated: false,
                 };
             }
         }
@@ -315,9 +322,9 @@ fn merge_output(stdout: &[u8], stderr: &[u8]) -> String {
 /// If the output fits, returns it unchanged.
 /// If truncation is needed, cuts at the last newline before the cap.
 /// Works on raw bytes to avoid panicking on multi-byte UTF-8 boundaries.
-fn truncate_output(raw: &str, max_bytes: usize) -> String {
+fn truncate_output(raw: &str, max_bytes: usize) -> (String, bool) {
     if raw.len() <= max_bytes {
-        return raw.to_string();
+        return (raw.to_string(), false);
     }
 
     let bytes = raw.as_bytes();
@@ -337,7 +344,10 @@ fn truncate_output(raw: &str, max_bytes: usize) -> String {
 
     let kept = &raw[..cut];
     let truncated_bytes = raw.len() - cut;
-    format!("{kept}\n\n... [truncated {truncated_bytes} bytes] ...")
+    (
+        format!("{kept}\n\n... [truncated {truncated_bytes} bytes] ..."),
+        true,
+    )
 }
 // ---------------------------------------------------------------------------
 // Tests
@@ -346,38 +356,8 @@ fn truncate_output(raw: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempSandbox;
     use std::fs;
-    use std::path::PathBuf;
-
-    use std::ops::Deref;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-    /// RAII temp directory — cleaned up on drop (even on panic).
-    struct TempSandbox(PathBuf);
-
-    impl TempSandbox {
-        fn new() -> Self {
-            let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-            let dir = std::env::temp_dir().join(format!("tod_test_{}_{id}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Deref for TempSandbox {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempSandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     // -- Edit application: WriteFile -------------------------------------
 
@@ -581,14 +561,15 @@ mod tests {
     #[test]
     fn no_truncation_under_limit() {
         let input = "short output";
-        assert_eq!(truncate_output(input, 4096), "short output");
+        assert_eq!(truncate_output(input, 4096), ("short output".to_string(), false));
     }
 
     #[test]
     fn truncation_snaps_to_line_boundary() {
         let input = "line1\nline2\nline3\nline4\nline5\n";
         // Cap at 18 bytes — "line1\nline2\nline3\n" is 18 bytes
-        let result = truncate_output(input, 18);
+        let (result, truncated) = truncate_output(input, 18);
+        assert!(truncated);
         assert!(result.starts_with("line1\nline2\nline3"));
         assert!(result.contains("truncated"));
     }
@@ -596,7 +577,8 @@ mod tests {
     #[test]
     fn truncation_reports_byte_count() {
         let input = "a\n".repeat(3000); // 6000 bytes
-        let result = truncate_output(&input, 4096);
+        let (result, truncated) = truncate_output(&input, 4096);
+        assert!(truncated);
         assert!(result.contains("truncated"));
         assert!(result.contains("bytes"));
     }
@@ -604,7 +586,7 @@ mod tests {
     #[test]
     fn exact_limit_no_truncation() {
         let input = "exactly";
-        assert_eq!(truncate_output(input, 7), "exactly");
+        assert_eq!(truncate_output(input, 7), ("exactly".to_string(), false));
     }
 
     #[test]
@@ -612,7 +594,8 @@ mod tests {
         // '€' is 3 bytes (E2 82 AC). Build a string where the byte cap
         // would land inside '€' if we naively sliced &str.
         let input = "abc\n€€€€€€€€€€\nmore stuff\n";
-        let result = truncate_output(input, 6);
+        let (result, truncated) = truncate_output(input, 6);
+        assert!(truncated);
         assert!(result.contains("truncated"));
         assert!(
             !result.contains('�'),

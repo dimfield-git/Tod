@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::RunConfig;
 use crate::editor::{create_edits, format_file_context, EditError};
-use crate::llm::LlmProvider;
+use crate::llm::{LlmProvider, Usage};
 use crate::planner::{create_plan, Plan, PlanError};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
@@ -119,6 +119,10 @@ pub struct AttemptLog {
     pub edit_batch: EditBatch,
     pub runner_output: RunnerLog,
     pub review_decision: String,
+    #[serde(default)]
+    pub usage_this_call: Option<Usage>,
+    #[serde(default)]
+    pub usage_cumulative: Usage,
 }
 
 /// Structured snapshot of runner output for logging.
@@ -173,6 +177,15 @@ pub struct RunState {
     pub last_log_path: Option<String>,
     /// Workspace fingerprint at last checkpoint.
     pub fingerprint: Fingerprint,
+    /// Accumulated token usage across all LLM calls in this run.
+    #[serde(default)]
+    pub usage: Usage,
+    /// Total token requests made in this run.
+    #[serde(default)]
+    pub llm_requests: u64,
+    /// Optional token cap (input + output combined). 0 = no cap.
+    #[serde(default)]
+    pub max_tokens: u64,
 }
 
 impl RunState {
@@ -193,6 +206,9 @@ impl RunState {
             log_dir,
             last_log_path: None,
             fingerprint,
+            usage: Usage::default(),
+            llm_requests: 0,
+            max_tokens: config.max_tokens,
         }
     }
 
@@ -215,8 +231,14 @@ impl RunState {
         }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(e) = fs::write(tod_dir.join("state.json"), json) {
+                let tmp_path = tod_dir.join("state.json.tmp");
+                let final_path = tod_dir.join("state.json");
+                if let Err(e) = fs::write(&tmp_path, json) {
                     eprintln!("warning: failed to write checkpoint: {e}");
+                    return;
+                }
+                if let Err(e) = fs::rename(&tmp_path, &final_path) {
+                    eprintln!("warning: failed to finalize checkpoint: {e}");
                 }
             }
             Err(e) => eprintln!("warning: failed to serialize checkpoint: {e}"),
@@ -248,18 +270,21 @@ impl RunState {
         batch: &EditBatch,
         run_result: &RunResult,
         decision: &str,
+        usage_this_call: Option<Usage>,
     ) {
         let dir = config.project_root.join(&self.log_dir);
         if fs::create_dir_all(&dir).is_err() {
             return;
         }
 
-        let (stage, ok, output) = match run_result {
-            RunResult::Success => ("success".to_string(), true, String::new()),
-            RunResult::Failure { stage, output } => (stage.clone(), false, output.clone()),
+        let (stage, ok, output, truncated) = match run_result {
+            RunResult::Success => ("success".to_string(), true, String::new(), false),
+            RunResult::Failure {
+                stage,
+                output,
+                truncated,
+            } => (stage.clone(), false, output.clone(), *truncated),
         };
-
-        let truncated = output.contains("[truncated");
 
         let log = AttemptLog {
             run_id: self.run_id.clone(),
@@ -275,6 +300,8 @@ impl RunState {
                 truncated,
             },
             review_decision: decision.to_string(),
+            usage_this_call,
+            usage_cumulative: self.usage.clone(),
         };
 
         let filename = format!(
@@ -330,6 +357,10 @@ pub enum LoopError {
     TotalIterationCap {
         max_total_iterations: usize,
     },
+    TokenCapExceeded {
+        used: u64,
+        cap: u64,
+    },
     NoCheckpoint,
     FingerprintMismatch {
         expected_hash: String,
@@ -380,6 +411,9 @@ impl std::fmt::Display for LoopError {
                 f,
                 "reached total iteration cap: {max_total_iterations}"
             ),
+            Self::TokenCapExceeded { used, cap } => {
+                write!(f, "token budget exceeded: used {used} tokens, cap was {cap}")
+            }
             Self::NoCheckpoint => write!(f, "no .tod/state.json found — nothing to resume"),
             Self::FingerprintMismatch {
                 expected_hash,
@@ -416,9 +450,20 @@ pub fn run(
     config: &RunConfig,
 ) -> Result<LoopReport, LoopError> {
     let project_context = build_project_context(&config.project_root)?;
-    let plan = create_plan(provider, goal, &project_context)?;
+    let (plan, plan_usage) = create_plan(provider, goal, &project_context)?;
 
     let mut state = RunState::new(goal.to_string(), plan, config);
+    if let Some(usage) = &plan_usage {
+        state.usage.accumulate(usage);
+        state.llm_requests += 1;
+    }
+    if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
+        state.checkpoint(config);
+        return Err(LoopError::TokenCapExceeded {
+            used: state.usage.total(),
+            cap: state.max_tokens,
+        });
+    }
 
     // Write plan log and checkpoint: plan created, about to start step 0.
     state.write_plan_log(config);
@@ -458,12 +503,24 @@ fn run_from_state(
             }
 
             // --- Generate edits ---
-            let batch = create_edits(provider, &step, &file_context, &config.project_root)
+            let (batch, call_usage) =
+                create_edits(provider, &step, &file_context, &config.project_root)
                 .map_err(|source| LoopError::Edit {
                     step_index: state.step_index,
                     iteration: state.step_state.attempt,
                     source,
                 })?;
+            if let Some(usage) = &call_usage {
+                state.usage.accumulate(usage);
+                state.llm_requests += 1;
+            }
+            if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
+                state.checkpoint(config);
+                return Err(LoopError::TokenCapExceeded {
+                    used: state.usage.total(),
+                    cap: state.max_tokens,
+                });
+            }
 
             // --- Apply + run (or skip in dry-run) ---
             let run_result = if config.dry_run {
@@ -485,17 +542,35 @@ fn run_from_state(
             ) {
                 ReviewDecision::Proceed => {
                     step_succeeded = true;
-                    state.write_attempt_log(config, &batch, &run_result, "proceed");
+                    state.write_attempt_log(
+                        config,
+                        &batch,
+                        &run_result,
+                        "proceed",
+                        call_usage.clone(),
+                    );
                     state.checkpoint(config);
                     break;
                 }
                 ReviewDecision::Retry { error_context } => {
-                    state.write_attempt_log(config, &batch, &run_result, "retry");
+                    state.write_attempt_log(
+                        config,
+                        &batch,
+                        &run_result,
+                        "retry",
+                        call_usage.clone(),
+                    );
                     state.step_state.retry_context = Some(error_context);
                     state.checkpoint(config);
                 }
                 ReviewDecision::Abort { reason } => {
-                    state.write_attempt_log(config, &batch, &run_result, "abort");
+                    state.write_attempt_log(
+                        config,
+                        &batch,
+                        &run_result,
+                        "abort",
+                        call_usage.clone(),
+                    );
                     state.checkpoint(config);
                     return Err(LoopError::Aborted {
                         step_index: state.step_index,
@@ -689,53 +764,13 @@ fn truncate_context(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempSandbox;
     use std::collections::VecDeque;
-    use std::ops::Deref;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use crate::config::{RunConfig, RunMode};
-    use crate::llm::{LlmError, LlmProvider};
+    use crate::llm::{LlmError, LlmProvider, LlmResponse, Usage};
     use crate::planner::PlanStep;
-
-    // -- RAII temp directory (Drop guard, consistent with runner.rs) -------
-
-    static TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempSandbox(PathBuf);
-
-    impl TempSandbox {
-        fn new() -> Self {
-            let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-            let dir =
-                std::env::temp_dir().join(format!("tod_loop_test_{}_{id}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-
-        /// Create the sandbox with a `src/main.rs` already present.
-        fn with_main_rs() -> Self {
-            let sb = Self::new();
-            fs::create_dir_all(sb.join("src")).unwrap();
-            fs::write(sb.join("src/main.rs"), "fn main() {}\n").unwrap();
-            sb
-        }
-    }
-
-    impl Deref for TempSandbox {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempSandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     // -- Fake providers ---------------------------------------------------
 
@@ -753,10 +788,12 @@ mod tests {
     }
 
     impl LlmProvider for QueueProvider {
-        fn complete(&self, _system: &str, _user: &str) -> Result<String, LlmError> {
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
             let mut lock = self.responses.lock().unwrap();
-            lock.pop_front()
-                .ok_or_else(|| LlmError::RequestFailed("no fake response queued".to_string()))
+            let text = lock
+                .pop_front()
+                .ok_or_else(|| LlmError::RequestFailed("no fake response queued".to_string()))?;
+            Ok(LlmResponse { text, usage: None })
         }
     }
 
@@ -778,6 +815,7 @@ mod tests {
             max_total_iterations: 3,
             dry_run: true,
             max_runner_output_bytes: 4096,
+            max_tokens: 0,
         };
 
         let report = run(&provider, "update", &config).unwrap();
@@ -805,10 +843,93 @@ mod tests {
             max_total_iterations: 1,
             dry_run: true,
             max_runner_output_bytes: 4096,
+            max_tokens: 0,
         };
 
         let err = run(&provider, "goal", &config).unwrap_err();
         assert!(matches!(err, LoopError::TotalIterationCap { .. }));
+    }
+
+    struct UsageProvider {
+        responses: Mutex<VecDeque<(String, Option<Usage>)>>,
+    }
+
+    impl UsageProvider {
+        fn from(responses: Vec<(String, Option<Usage>)>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+            }
+        }
+    }
+
+    impl LlmProvider for UsageProvider {
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
+            let mut lock = self.responses.lock().unwrap();
+            let (text, usage) = lock
+                .pop_front()
+                .ok_or_else(|| LlmError::RequestFailed("no fake response queued".to_string()))?;
+            Ok(LlmResponse { text, usage })
+        }
+    }
+
+    #[test]
+    fn token_cap_aborts_run() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = UsageProvider::from(vec![(
+            r#"{"steps":[{"description":"s","files":["src/main.rs"]}]}"#.to_string(),
+            Some(Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            }),
+        )]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 1,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::TokenCapExceeded { used: 2, cap: 1 }));
+    }
+
+    #[test]
+    fn usage_survives_checkpoint() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = UsageProvider::from(vec![
+            (
+                r#"{"steps":[{"description":"s","files":["src/main.rs"]}]}"#.to_string(),
+                Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                }),
+            ),
+            (
+                r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() {}"}]}"#.to_string(),
+                Some(Usage {
+                    input_tokens: 3,
+                    output_tokens: 2,
+                }),
+            ),
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let _ = run(&provider, "goal", &config).unwrap();
+        let state_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let state: RunState = serde_json::from_str(&state_json).unwrap();
+        assert!(state.usage.input_tokens > 0);
+        assert!(state.usage.output_tokens > 0);
     }
 
     // -- State struct unit tests ------------------------------------------
@@ -979,6 +1100,35 @@ mod tests {
         assert_eq!(parsed["step_index"], 1);
     }
 
+    #[test]
+    fn checkpoint_is_atomic() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "step".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let final_path = sandbox.join(".tod/state.json");
+        let tmp_path = sandbox.join(".tod/state.json.tmp");
+        assert!(final_path.exists(), "state.json must exist after checkpoint");
+        assert!(
+            !tmp_path.exists(),
+            "state.json.tmp must not remain after checkpoint"
+        );
+
+        let json = fs::read_to_string(final_path).unwrap();
+        let parsed: RunState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.goal, "goal");
+    }
+
     // -- Plan log ---------------------------------------------------------
 
     #[test]
@@ -1030,7 +1180,7 @@ mod tests {
 
         let batch = EditBatch { edits: vec![] };
         let result = RunResult::Success;
-        state.write_attempt_log(&config, &batch, &result, "proceed");
+        state.write_attempt_log(&config, &batch, &result, "proceed", None);
 
         let log_path = sandbox.join(&state.log_dir).join("step_0_attempt_1.json");
         assert!(log_path.exists(), "attempt log file must exist");
@@ -1159,6 +1309,7 @@ mod tests {
             max_total_iterations: 10,
             dry_run: true,
             max_runner_output_bytes: 4096,
+            max_tokens: 0,
         };
 
         // Run the initial loop — dry_run so it completes both steps

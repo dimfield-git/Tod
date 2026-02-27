@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
 
@@ -34,11 +35,35 @@ impl std::error::Error for LlmError {}
 // Provider trait
 // ---------------------------------------------------------------------------
 
+/// Token usage reported by an LLM provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl Usage {
+    pub fn total(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+
+    pub fn accumulate(&mut self, other: &Usage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
+
+/// Full response from an LLM provider call.
+pub struct LlmResponse {
+    pub text: String,
+    pub usage: Option<Usage>,
+}
+
 /// Any LLM backend the agent can talk to.
 ///
 /// Blocking by design — the agent loop is sequential.
 pub trait LlmProvider {
-    fn complete(&self, system: &str, user: &str) -> Result<String, LlmError>;
+    fn complete(&self, system: &str, user: &str) -> Result<LlmResponse, LlmError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,17 +81,25 @@ impl AnthropicProvider {
     /// Reads `ANTHROPIC_API_KEY` — fails immediately if missing.
     pub fn from_env() -> Result<Self, LlmError> {
         let api_key = env::var("ANTHROPIC_API_KEY").map_err(|_| LlmError::MissingApiKey)?;
+        let model =
+            env::var("TOD_MODEL").unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
+        let max_tokens: u32 = env::var("TOD_RESPONSE_MAX_TOKENS")
+            .unwrap_or_else(|_| "4096".to_string())
+            .parse()
+            .map_err(|_| {
+                LlmError::RequestFailed("TOD_RESPONSE_MAX_TOKENS must be a valid u32".to_string())
+            })?;
 
         Ok(Self {
             api_key,
-            model: "claude-sonnet-4-5-20250929".to_string(),
-            max_tokens: 4096,
+            model,
+            max_tokens,
         })
     }
 }
 
 impl LlmProvider for AnthropicProvider {
-    fn complete(&self, system: &str, user: &str) -> Result<String, LlmError> {
+    fn complete(&self, system: &str, user: &str) -> Result<LlmResponse, LlmError> {
         let body = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -109,7 +142,17 @@ impl LlmProvider for AnthropicProvider {
                 LlmError::UnexpectedResponse(format!("no text in content block: {preview}"))
             })?;
 
-        Ok(text.to_string())
+        let usage = response_body.get("usage").and_then(|u| {
+            Some(Usage {
+                input_tokens: u.get("input_tokens")?.as_u64()?,
+                output_tokens: u.get("output_tokens")?.as_u64()?,
+            })
+        });
+
+        Ok(LlmResponse {
+            text: text.to_string(),
+            usage,
+        })
     }
 }
 
@@ -140,22 +183,34 @@ mod tests {
     }
 
     struct EnvGuard {
-        original: Option<String>,
+        original_api_key: Option<String>,
+        original_model: Option<String>,
+        original_max_tokens: Option<String>,
     }
 
     impl EnvGuard {
         fn new() -> Self {
             Self {
-                original: env::var("ANTHROPIC_API_KEY").ok(),
+                original_api_key: env::var("ANTHROPIC_API_KEY").ok(),
+                original_model: env::var("TOD_MODEL").ok(),
+                original_max_tokens: env::var("TOD_RESPONSE_MAX_TOKENS").ok(),
             }
         }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            match &self.original {
+            match &self.original_api_key {
                 Some(v) => env::set_var("ANTHROPIC_API_KEY", v),
                 None => env::remove_var("ANTHROPIC_API_KEY"),
+            }
+            match &self.original_model {
+                Some(v) => env::set_var("TOD_MODEL", v),
+                None => env::remove_var("TOD_MODEL"),
+            }
+            match &self.original_max_tokens {
+                Some(v) => env::set_var("TOD_RESPONSE_MAX_TOKENS", v),
+                None => env::remove_var("TOD_RESPONSE_MAX_TOKENS"),
             }
         }
     }
@@ -175,8 +230,58 @@ mod tests {
         let _lock = env_lock().lock().unwrap();
         let _guard = EnvGuard::new();
         env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
+        env::remove_var("TOD_MODEL");
+        env::remove_var("TOD_RESPONSE_MAX_TOKENS");
         let provider = AnthropicProvider::from_env();
         assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn provider_uses_default_model() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
+        env::remove_var("TOD_MODEL");
+        env::remove_var("TOD_RESPONSE_MAX_TOKENS");
+
+        let provider = AnthropicProvider::from_env().unwrap();
+        assert_eq!(provider.model, "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn provider_reads_custom_model() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
+        env::set_var("TOD_MODEL", "claude-haiku-4-5-20251001");
+        env::remove_var("TOD_RESPONSE_MAX_TOKENS");
+
+        let provider = AnthropicProvider::from_env().unwrap();
+        assert_eq!(provider.model, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn provider_reads_custom_max_tokens() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
+        env::remove_var("TOD_MODEL");
+        env::set_var("TOD_RESPONSE_MAX_TOKENS", "8192");
+
+        let provider = AnthropicProvider::from_env().unwrap();
+        assert_eq!(provider.max_tokens, 8192);
+    }
+
+    #[test]
+    fn provider_rejects_invalid_max_tokens() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        env::set_var("ANTHROPIC_API_KEY", "test-key-not-real");
+        env::remove_var("TOD_MODEL");
+        env::set_var("TOD_RESPONSE_MAX_TOKENS", "banana");
+
+        let provider = AnthropicProvider::from_env();
+        assert!(matches!(provider, Err(LlmError::RequestFailed(_))));
     }
 
     #[test]
@@ -186,12 +291,56 @@ mod tests {
     }
 
     #[test]
+    fn usage_accumulate() {
+        let mut base = Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+        };
+        let add = Usage {
+            input_tokens: 3,
+            output_tokens: 7,
+        };
+        base.accumulate(&add);
+        assert_eq!(
+            base,
+            Usage {
+                input_tokens: 13,
+                output_tokens: 27
+            }
+        );
+    }
+
+    #[test]
+    fn usage_total() {
+        let usage = Usage {
+            input_tokens: 12,
+            output_tokens: 5,
+        };
+        assert_eq!(usage.total(), 17);
+    }
+
+    #[test]
+    fn usage_default_is_zero() {
+        assert_eq!(
+            Usage::default(),
+            Usage {
+                input_tokens: 0,
+                output_tokens: 0
+            }
+        );
+    }
+
+    #[test]
     #[ignore] // requires live API key
     fn smoke_real_api_call() {
         let provider = AnthropicProvider::from_env().expect("ANTHROPIC_API_KEY must be set");
         let response = provider
             .complete("Respond with only the word 'hello'.", "Say hello.")
             .expect("API call failed");
-        assert!(response.to_lowercase().contains("hello"), "got: {response}");
+        assert!(
+            response.text.to_lowercase().contains("hello"),
+            "got: {}",
+            response.text
+        );
     }
 }

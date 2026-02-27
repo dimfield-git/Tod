@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::llm::{LlmError, LlmProvider};
+use crate::llm::{LlmError, LlmProvider, Usage};
 use crate::schema::extract_json;
 
 // ---------------------------------------------------------------------------
@@ -91,17 +91,17 @@ pub fn create_plan(
     provider: &dyn LlmProvider,
     goal: &str,
     context: &str,
-) -> Result<Plan, PlanError> {
+) -> Result<(Plan, Option<Usage>), PlanError> {
     let user_msg = format!("## Goal\n{goal}\n\n## Project context\n{context}");
-    let raw = provider.complete(SYSTEM_PROMPT, &user_msg)?;
-    let plan = extract_json::<Plan>(&raw).map_err(PlanError::Parse)?;
+    let response = provider.complete(SYSTEM_PROMPT, &user_msg)?;
+    let plan = extract_json::<Plan>(&response.text).map_err(PlanError::Parse)?;
 
     if plan.steps.is_empty() {
         return Err(PlanError::Empty);
     }
     validate_plan(&plan)?;
 
-    Ok(plan)
+    Ok((plan, response.usage))
 }
 
 fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
@@ -152,7 +152,7 @@ fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::LlmProvider;
+    use crate::llm::{LlmProvider, LlmResponse};
     use crate::schema::extract_json;
 
     /// Fake provider that returns a canned response.
@@ -161,15 +161,18 @@ mod tests {
     }
 
     impl LlmProvider for FakeProvider {
-        fn complete(&self, _system: &str, _user: &str) -> Result<String, LlmError> {
-            Ok(self.response.clone())
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
+            Ok(LlmResponse {
+                text: self.response.clone(),
+                usage: None,
+            })
         }
     }
 
     struct FailProvider;
 
     impl LlmProvider for FailProvider {
-        fn complete(&self, _system: &str, _user: &str) -> Result<String, LlmError> {
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
             Err(LlmError::RequestFailed("fake failure".into()))
         }
     }
@@ -208,7 +211,8 @@ mod tests {
             response: r#"{"steps":[{"description":"create module","files":["src/foo.rs"]}]}"#
                 .to_string(),
         };
-        let plan = create_plan(&provider, "goal", "ctx").unwrap();
+        let (plan, usage) = create_plan(&provider, "goal", "ctx").unwrap();
+        assert!(usage.is_none());
         assert_eq!(plan.steps.len(), 1);
     }
 

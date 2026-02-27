@@ -33,6 +33,10 @@ pub struct RunSummary {
     pub total_attempts: usize,
     pub retries_per_step: Vec<usize>,
     pub failure_stages: Vec<(String, usize)>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub llm_requests: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +46,7 @@ pub struct MultiRunSummary {
     pub runs_aborted: usize,
     pub runs_cap_reached: usize,
     pub avg_attempts: f64,
+    pub avg_tokens: f64,
     pub most_common_failure_stage: Option<(String, usize)>,
 }
 
@@ -200,6 +205,18 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         RunOutcome::CapReached
     };
 
+    let usage_cumulative = attempt_logs
+        .last()
+        .map(|log| log.usage_cumulative.clone())
+        .unwrap_or_default();
+    let input_tokens = usage_cumulative.input_tokens;
+    let output_tokens = usage_cumulative.output_tokens;
+    let total_tokens = usage_cumulative.total();
+    let llm_requests = attempt_logs
+        .iter()
+        .filter(|log| log.usage_this_call.is_some())
+        .count() as u64;
+
     Ok(RunSummary {
         run_id: plan_log.run_id,
         goal: plan_log.goal,
@@ -209,6 +226,10 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         total_attempts,
         retries_per_step,
         failure_stages,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        llm_requests,
     })
 }
 
@@ -264,12 +285,14 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
     let mut runs_aborted = 0usize;
     let mut runs_cap_reached = 0usize;
     let mut attempts_total = 0usize;
+    let mut tokens_total = 0u64;
     let mut failure_counts: HashMap<String, usize> = HashMap::new();
 
     for run_id in selected {
         let summary = summarize_run(&logs_dir.join(run_id))?;
         runs_total += 1;
         attempts_total += summary.total_attempts;
+        tokens_total += summary.total_tokens;
 
         match summary.outcome {
             RunOutcome::Success => runs_succeeded += 1,
@@ -287,6 +310,11 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
     } else {
         attempts_total as f64 / runs_total as f64
     };
+    let avg_tokens = if runs_total == 0 {
+        0.0
+    } else {
+        tokens_total as f64 / runs_total as f64
+    };
 
     let most_common_failure_stage = failure_counts
         .into_iter()
@@ -298,6 +326,7 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
         runs_aborted,
         runs_cap_reached,
         avg_attempts,
+        avg_tokens,
         most_common_failure_stage,
     })
 }
@@ -322,6 +351,15 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
             .join(", ")
     };
 
+    let tokens_line = if summary.total_tokens > 0 {
+        format!(
+            "\nTokens:     {} in / {} out ({} requests)",
+            summary.input_tokens, summary.output_tokens, summary.llm_requests
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         "Run:        {}\nGoal:       {}\nOutcome:    {}\nProgress:   {}/{} steps completed, {} aborted\nAttempts:   {} total ({})\nFailures:   {}\nLogs:       .tod/logs/{}/",
         summary.run_id,
@@ -334,7 +372,7 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
         attempts,
         failures,
         summary.run_id,
-    )
+    ) + &tokens_line
 }
 
 pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
@@ -350,51 +388,28 @@ pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
     };
 
     format!(
-        "Last {} runs:\n  Succeeded: {}  Aborted: {}{}\n  Avg attempts: {:.1}\n  Most common failure: {}",
-        summary.runs_total, summary.runs_succeeded, summary.runs_aborted, cap_str, summary.avg_attempts, failure,
+        "Last {} runs:\n  Succeeded: {}  Aborted: {}{}\n  Avg attempts: {:.1}\n  Avg tokens: {:.0}\n  Most common failure: {}",
+        summary.runs_total,
+        summary.runs_succeeded,
+        summary.runs_aborted,
+        cap_str,
+        summary.avg_attempts,
+        summary.avg_tokens,
+        failure,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ops::Deref;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::test_util::TempSandbox;
+    use std::path::Path;
 
     use serde_json::json;
 
+    use crate::llm::Usage;
     use crate::planner::{Plan, PlanStep};
     use crate::r#loop::{Fingerprint, StepState};
-
-    static TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempSandbox(PathBuf);
-
-    impl TempSandbox {
-        fn new() -> Self {
-            let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-            let dir =
-                std::env::temp_dir().join(format!("tod_stats_test_{}_{id}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Deref for TempSandbox {
-        type Target = Path;
-
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempSandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn write_plan(run_dir: &Path, run_id: &str, goal: &str, steps: usize) {
         let plan_steps = (0..steps)
@@ -464,6 +479,9 @@ mod tests {
                 total_bytes: 0,
                 hash: "hash".to_string(),
             },
+            usage: Usage::default(),
+            llm_requests: 0,
+            max_tokens: 0,
         };
 
         let tod_dir = project_root.join(".tod");
@@ -652,6 +670,47 @@ mod tests {
         assert_eq!(summary.runs_aborted, 0);
         assert_eq!(summary.runs_cap_reached, 0);
         assert_eq!(summary.avg_attempts, 0.0);
+        assert_eq!(summary.avg_tokens, 0.0);
         assert_eq!(summary.most_common_failure_stage, None);
+    }
+
+    #[test]
+    fn format_run_summary_shows_tokens() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "g".to_string(),
+            outcome: RunOutcome::Success,
+            steps_completed: 1,
+            steps_aborted: 0,
+            total_attempts: 1,
+            retries_per_step: vec![1],
+            failure_stages: vec![],
+            input_tokens: 1234,
+            output_tokens: 567,
+            total_tokens: 1801,
+            llm_requests: 3,
+        };
+        let rendered = format_run_summary(&summary);
+        assert!(rendered.contains("Tokens:"));
+    }
+
+    #[test]
+    fn format_run_summary_hides_zero_tokens() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "g".to_string(),
+            outcome: RunOutcome::Success,
+            steps_completed: 1,
+            steps_aborted: 0,
+            total_attempts: 1,
+            retries_per_step: vec![1],
+            failure_stages: vec![],
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            llm_requests: 0,
+        };
+        let rendered = format_run_summary(&summary);
+        assert!(!rendered.contains("Tokens:"));
     }
 }

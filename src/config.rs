@@ -42,6 +42,9 @@ pub struct RunConfig {
     /// Truncated output is snapped to the nearest line boundary.
     /// Keeps context budget sane for the fixer LLM call.
     pub max_runner_output_bytes: usize,
+
+    /// Max total tokens (input + output) across all LLM calls. 0 = no limit.
+    pub max_tokens: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +60,7 @@ impl Default for RunConfig {
             max_total_iterations: 25,
             dry_run: false,
             max_runner_output_bytes: 4096,
+            max_tokens: 0,
         }
     }
 }
@@ -77,6 +81,7 @@ mod tests {
         assert!(cfg.max_iterations_per_step > 0);
         assert!(cfg.max_total_iterations >= cfg.max_iterations_per_step);
         assert_eq!(cfg.max_runner_output_bytes, 4096);
+        assert_eq!(cfg.max_tokens, 0);
     }
 
     #[test]

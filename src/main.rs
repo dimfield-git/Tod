@@ -8,6 +8,8 @@ mod reviewer;
 mod runner;
 mod schema;
 mod stats;
+#[cfg(test)]
+mod test_util;
 
 use clap::Parser;
 
