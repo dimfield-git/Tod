@@ -12,16 +12,16 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current phase (see `PHASE7.md`) → Future phases.
+- **Priority order:** Current phase (see `PHASE8.md`) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
 
 ## Repo Identity
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 111 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 121 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–6 complete. Phase 7 (observability) is next.
+Linux-only. No GUI dependencies. Phases 1–7 complete. Phase 8 (hardening + budget enforcement) is next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -35,10 +35,11 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 4 | Execution loop — plan → edit → apply → run → review cycle, iteration caps | ✅ Done |
 | 5 | Runner — cargo pipeline execution, transactional edit apply with rollback, strict mode (`fmt --check` + clippy) | ✅ Done |
 | 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
-| 7 | Observability — read-only stats from structured logs, per-run and cross-run metrics | **Next** |
-| 8 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement | Not started |
+| 7 | Observability — `stats.rs` module, read-only analysis from structured logs, per-run and cross-run metrics, CLI `stats` command | ✅ Done |
+| 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | **Next** |
+| 9 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement by cost | Not started |
 
-**Current phase instructions: see [`PHASE7.md`](PHASE7.md)**
+**Current phase instructions: see [`PHASE8.md`](PHASE8.md)**
 
 ## Golden Path Commands
 
@@ -58,8 +59,8 @@ No external system dependencies beyond a Rust toolchain.
 
 ```
 src/
-  main.rs       Entry point, CLI dispatch (run, resume, status), provider init
-  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume, status
+  main.rs       Entry point, CLI dispatch (run, resume, status, stats), provider init
+  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume
   schema.rs     EditAction types, JSON extraction, path + batch validation
   config.rs     RunConfig, RunMode — immutable after construction
   cli.rs        clap derive CLI, argument-to-config conversion (resume: --project, --force)
@@ -68,6 +69,7 @@ src/
   editor.rs     Edit creation prompt, format_file_context()
   runner.rs     Transactional edit apply, cargo pipeline execution
   reviewer.rs   Proceed / Retry / Abort decision logic (pure, no LLM)
+  stats.rs      Read-only analysis of .tod/ logs, per-run and cross-run metrics
 
 docs/
   tod-architecture.html   Interactive module diagram (GitHub Pages)
@@ -80,13 +82,13 @@ docs/
 
 ```
 <project_root>/.tod/
-  state.json                          RunState checkpoint (overwritten each time)
+  state.json                          RunState checkpoint (overwritten atomically each time)
   logs/<run_id>/
     plan.json                         Written once after planning
     step_N_attempt_M.json             One per edit→apply→run→review cycle
 ```
 
-Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integration test crate yet.
+Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilities in `test_util.rs` (crate-level `#[cfg(test)]` module).
 
 ## Architectural Invariants
 
@@ -100,6 +102,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
 - Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
 - State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json`; resume loads from it. Fingerprint detects workspace drift between runs.
+- LLM provider trait returns `LlmResponse` (text + optional usage). Loop is the sole accumulator of token usage in `RunState`.
 
 ## Coding Standards
 
@@ -109,14 +112,14 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 - `unsafe` is forbidden.
 - Typed errors (`thiserror`) everywhere. `anyhow` is not used.
 - Blocking HTTP only (`ureq`). No async runtime.
-- Test helpers use RAII `TempSandbox` with `Drop` guard for cleanup. Follow existing pattern in `runner.rs` / `loop.rs`.
+- Test helpers use shared `TempSandbox` from `test_util.rs` with RAII `Drop` guard for cleanup.
 
 ## Testing Policy
 
-- Every change must leave `cargo test` at ≥ 111 passing, 0 failing.
+- Every change must leave `cargo test` at ≥ 121 passing, 0 failing.
 - Every new public function gets at least one test.
 - Tests live in `#[cfg(test)] mod tests` at the bottom of each module.
-- Use `TempSandbox` (RAII temp dir with Drop cleanup) for filesystem tests.
+- Use `TempSandbox` from `crate::test_util` for filesystem tests.
 - The one ignored test (`llm.rs` live API smoke) stays ignored in normal runs.
 - No network calls from tests except the ignored smoke test.
 
@@ -134,4 +137,5 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. No separate integrat
 - Shell: bash
 - Repo location: `~/Agents/Tod/`
 - LLM provider: Anthropic (Claude) via `ANTHROPIC_API_KEY` env var
+- Provider config: `TOD_MODEL` (default: `claude-sonnet-4-5-20250929`), `TOD_RESPONSE_MAX_TOKENS` (default: `4096`)
 - Key dependencies: `ureq` (HTTP), `serde`/`serde_json` (JSON), `clap` (CLI), `sha2` (fingerprint), `chrono` (timestamps)
