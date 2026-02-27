@@ -635,7 +635,10 @@ mod tests {
         assert_eq!(summary.runs_aborted, 1);
         assert_eq!(summary.runs_cap_reached, 1);
         assert!((summary.avg_attempts - (4.0 / 3.0)).abs() < f64::EPSILON);
-        assert_eq!(summary.most_common_failure_stage, Some(("build".to_string(), 2)));
+        assert_eq!(
+            summary.most_common_failure_stage,
+            Some(("build".to_string(), 2))
+        );
     }
 
     #[test]
