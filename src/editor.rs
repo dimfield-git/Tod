@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::context::format_file_context;
 use crate::llm::{LlmError, LlmProvider, Usage};
 use crate::planner::PlanStep;
 use crate::schema::{extract_json, validate_batch, EditBatch, ValidationError};
@@ -69,29 +70,6 @@ Rules:
 "#;
 
 // ---------------------------------------------------------------------------
-// File context formatting
-// ---------------------------------------------------------------------------
-
-/// Format file contents with numbered lines for the LLM.
-///
-/// Produces output like:
-/// ```text
-/// === src/main.rs ===
-///    1 | fn main() {
-///    2 |     println!("hello");
-///    3 | }
-/// ```
-///
-/// The loop calls this for each file before passing context to the editor.
-pub fn format_file_context(path: &str, content: &str) -> String {
-    let mut out = format!("=== {path} ===\n");
-    for (i, line) in content.lines().enumerate() {
-        out.push_str(&format!("{:4} | {line}\n", i + 1));
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
 // Core function
 // ---------------------------------------------------------------------------
 
@@ -105,6 +83,7 @@ pub fn create_edits(
     file_context: &str,
     sandbox_root: &Path,
 ) -> Result<(EditBatch, Option<Usage>), EditError> {
+    let _format_file_context: fn(&str, &str) -> String = format_file_context;
     let user_msg = format!(
         "## Step\n{}\n\n## Files involved\n{}\n\n## Current file contents\n{}",
         step.description,
@@ -237,13 +216,5 @@ mod tests {
         };
         let (batch, _) = create_edits(&provider, &test_step(), "", &sandbox()).unwrap();
         assert_eq!(batch.edits.len(), 2);
-    }
-    #[test]
-    fn format_file_context_numbers_lines() {
-        let result = format_file_context("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
-        assert!(result.starts_with("=== src/main.rs ===\n"));
-        assert!(result.contains("   1 | fn main() {"));
-        assert!(result.contains("   2 |     println!(\"hi\");"));
-        assert!(result.contains("   3 | }"));
     }
 }

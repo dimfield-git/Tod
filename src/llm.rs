@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const MAX_RETRIES: usize = 3;
+const INITIAL_BACKOFF_MS: u64 = 1000;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -98,6 +103,35 @@ impl AnthropicProvider {
     }
 }
 
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503)
+}
+
+fn pseudo_random_offset(jitter_ms: u64) -> i64 {
+    if jitter_ms == 0 {
+        return 0;
+    }
+    let span = jitter_ms.saturating_mul(2).saturating_add(1);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let sample = nanos % span;
+    sample as i64 - jitter_ms as i64
+}
+
+fn sleep_with_jitter(attempt: usize) {
+    let base_ms = INITIAL_BACKOFF_MS.saturating_mul(2u64.saturating_pow(attempt as u32));
+    let jitter_ms = base_ms / 4; // +-25%
+    let offset = pseudo_random_offset(jitter_ms);
+    let actual_ms = if offset >= 0 {
+        base_ms.saturating_add(offset as u64)
+    } else {
+        base_ms.saturating_sub((-offset) as u64)
+    };
+    thread::sleep(Duration::from_millis(actual_ms));
+}
+
 impl LlmProvider for AnthropicProvider {
     fn complete(&self, system: &str, user: &str) -> Result<LlmResponse, LlmError> {
         let body = json!({
@@ -109,50 +143,85 @@ impl LlmProvider for AnthropicProvider {
             ]
         });
 
-        let response = ureq::post("https://api.anthropic.com/v1/messages")
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .send_json(&body)
-            .map_err(|e: ureq::Error| LlmError::RequestFailed(e.to_string()))?;
+        for attempt in 0..=MAX_RETRIES {
+            let response = match ureq::post("https://api.anthropic.com/v1/messages")
+                .config()
+                .http_status_as_error(false)
+                .build()
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .send_json(&body)
+            {
+                Ok(resp) => resp,
+                Err(e) if attempt < MAX_RETRIES => {
+                    eprintln!(
+                        "warning: LLM request failed (attempt {}), retrying: {e}",
+                        attempt + 1
+                    );
+                    sleep_with_jitter(attempt);
+                    continue;
+                }
+                Err(e) => return Err(LlmError::RequestFailed(e.to_string())),
+            };
 
-        let status = response.status().as_u16();
-        let body_str = response
-            .into_body()
-            .read_to_string()
-            .map_err(|e: ureq::Error| LlmError::UnexpectedResponse(e.to_string()))?;
-        if status >= 400 {
-            return Err(LlmError::ApiError {
-                status,
-                body: safe_preview(&body_str, 500).to_string(),
+            let status = response.status().as_u16();
+            let body_str = match response.into_body().read_to_string() {
+                Ok(s) => s,
+                Err(e) if attempt < MAX_RETRIES => {
+                    eprintln!(
+                        "warning: LLM response read failed (attempt {}), retrying: {e}",
+                        attempt + 1
+                    );
+                    sleep_with_jitter(attempt);
+                    continue;
+                }
+                Err(e) => return Err(LlmError::RequestFailed(e.to_string())),
+            };
+
+            if status >= 400 {
+                if is_retryable_status(status) && attempt < MAX_RETRIES {
+                    eprintln!(
+                        "warning: LLM API error {status} (attempt {}), retrying: {}",
+                        attempt + 1,
+                        safe_preview(&body_str, 200)
+                    );
+                    sleep_with_jitter(attempt);
+                    continue;
+                }
+                return Err(LlmError::ApiError {
+                    status,
+                    body: safe_preview(&body_str, 500).to_string(),
+                });
+            }
+
+            let response_body: serde_json::Value = serde_json::from_str(&body_str)
+                .map_err(|e| LlmError::UnexpectedResponse(e.to_string()))?;
+
+            let text = response_body["content"][0]["text"]
+                .as_str()
+                .ok_or_else(|| {
+                    let dump = response_body.to_string();
+                    let preview = safe_preview(&dump, 200);
+                    LlmError::UnexpectedResponse(format!("no text in content block: {preview}"))
+                })?;
+
+            let usage = response_body.get("usage").and_then(|u| {
+                Some(Usage {
+                    input_tokens: u.get("input_tokens")?.as_u64()?,
+                    output_tokens: u.get("output_tokens")?.as_u64()?,
+                })
+            });
+
+            return Ok(LlmResponse {
+                text: text.to_string(),
+                usage,
             });
         }
-        let response_body: serde_json::Value = serde_json::from_str(&body_str)
-            .map_err(|e| LlmError::UnexpectedResponse(e.to_string()))?;
 
-        // Extract text from first content block
-        let text = response_body["content"][0]["text"]
-            .as_str()
-            .ok_or_else(|| {
-                let dump = response_body.to_string();
-                let preview = safe_preview(&dump, 200);
-                LlmError::UnexpectedResponse(format!("no text in content block: {preview}"))
-            })?;
-
-        let usage = response_body.get("usage").and_then(|u| {
-            Some(Usage {
-                input_tokens: u.get("input_tokens")?.as_u64()?,
-                output_tokens: u.get("output_tokens")?.as_u64()?,
-            })
-        });
-
-        Ok(LlmResponse {
-            text: text.to_string(),
-            usage,
-        })
+        Err(LlmError::RequestFailed(
+            "retry loop exhausted without response".to_string(),
+        ))
     }
 }
 
@@ -328,6 +397,26 @@ mod tests {
                 output_tokens: 0
             }
         );
+    }
+
+    #[test]
+    fn is_retryable_429() {
+        assert!(is_retryable_status(429));
+    }
+
+    #[test]
+    fn is_retryable_500() {
+        assert!(is_retryable_status(500));
+    }
+
+    #[test]
+    fn not_retryable_400() {
+        assert!(!is_retryable_status(400));
+    }
+
+    #[test]
+    fn not_retryable_401() {
+        assert!(!is_retryable_status(401));
     }
 
     #[test]

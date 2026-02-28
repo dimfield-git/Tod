@@ -561,7 +561,10 @@ mod tests {
     #[test]
     fn no_truncation_under_limit() {
         let input = "short output";
-        assert_eq!(truncate_output(input, 4096), ("short output".to_string(), false));
+        assert_eq!(
+            truncate_output(input, 4096),
+            ("short output".to_string(), false)
+        );
     }
 
     #[test]

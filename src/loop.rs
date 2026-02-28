@@ -4,12 +4,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::config::RunConfig;
-use crate::editor::{create_edits, format_file_context, EditError};
+use crate::context::{self, ContextError, MAX_TREE_DEPTH};
+use crate::editor::{create_edits, EditError};
 use crate::llm::{LlmProvider, Usage};
 use crate::planner::{create_plan, Plan, PlanError};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
-use crate::schema::{validate_path, EditBatch};
+use crate::schema::EditBatch;
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
@@ -434,6 +435,23 @@ impl From<PlanError> for LoopError {
     }
 }
 
+impl From<ContextError> for LoopError {
+    fn from(value: ContextError) -> Self {
+        match value {
+            ContextError::Io { path, cause } => Self::Io { path, cause },
+            ContextError::InvalidPath {
+                step_index,
+                path,
+                reason,
+            } => Self::InvalidPlanPath {
+                step_index,
+                path,
+                reason,
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -449,7 +467,7 @@ pub fn run(
     goal: &str,
     config: &RunConfig,
 ) -> Result<LoopReport, LoopError> {
-    let project_context = build_project_context(&config.project_root)?;
+    let project_context = context::build_planner_context(&config.project_root)?;
     let (plan, plan_usage) = create_plan(provider, goal, &project_context)?;
 
     let mut state = RunState::new(goal.to_string(), plan, config);
@@ -496,20 +514,21 @@ fn run_from_state(
 
             // --- Build file context, append retry feedback if present ---
             let mut file_context =
-                build_step_file_context(&config.project_root, &step.files, state.step_index)?;
+                context::build_step_context(&config.project_root, &step.files, state.step_index)?;
             if let Some(ctx) = &state.step_state.retry_context {
-                file_context.push_str("\n## Previous runner failure\n");
-                file_context.push_str(ctx);
+                file_context.push('\n');
+                file_context.push_str(&context::build_retry_context(ctx));
             }
 
             // --- Generate edits ---
             let (batch, call_usage) =
-                create_edits(provider, &step, &file_context, &config.project_root)
-                .map_err(|source| LoopError::Edit {
-                    step_index: state.step_index,
-                    iteration: state.step_state.attempt,
-                    source,
-                })?;
+                create_edits(provider, &step, &file_context, &config.project_root).map_err(
+                    |source| LoopError::Edit {
+                        step_index: state.step_index,
+                        iteration: state.step_state.attempt,
+                        source,
+                    },
+                )?;
             if let Some(usage) = &call_usage {
                 state.usage.accumulate(usage);
                 state.llm_requests += 1;
@@ -628,133 +647,6 @@ pub fn resume(
 
     // Continue the step loop from where we left off
     run_from_state(provider, config, &mut state)
-}
-
-// ---------------------------------------------------------------------------
-// Context helpers
-// ---------------------------------------------------------------------------
-
-/// Maximum directory depth to recurse when building project context.
-const MAX_TREE_DEPTH: usize = 12;
-
-/// Maximum files to list in the planner context.
-const MAX_LISTED_FILES: usize = 200;
-
-fn build_project_context(project_root: &Path) -> Result<String, LoopError> {
-    let mut files = Vec::new();
-    collect_paths(project_root, project_root, &mut files, 0)?;
-    files.sort();
-
-    let mut out = String::from("Project file tree:\n");
-    for file in files.into_iter().take(MAX_LISTED_FILES) {
-        out.push_str("- ");
-        out.push_str(&file);
-        out.push('\n');
-    }
-
-    // Cargo.toml is high-signal context for the planner.
-    let cargo_path = project_root.join("Cargo.toml");
-    if let Ok(contents) = fs::read_to_string(&cargo_path) {
-        out.push_str("\n---\nCargo.toml:\n");
-        out.push_str(&truncate_context(&contents, 8 * 1024));
-    }
-
-    Ok(out)
-}
-
-fn collect_paths(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<String>,
-    depth: usize,
-) -> Result<(), LoopError> {
-    if depth > MAX_TREE_DEPTH {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(dir).map_err(|e| LoopError::Io {
-        path: dir.display().to_string(),
-        cause: e.to_string(),
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| LoopError::Io {
-            path: dir.display().to_string(),
-            cause: e.to_string(),
-        })?;
-        let path = entry.path();
-        let ty = entry.file_type().map_err(|e| LoopError::Io {
-            path: path.display().to_string(),
-            cause: e.to_string(),
-        })?;
-
-        if ty.is_dir() {
-            let name = entry.file_name();
-            if name == ".git" || name == "target" || name == ".tod" {
-                continue;
-            }
-            collect_paths(root, &path, out, depth + 1)?;
-        } else if ty.is_file() {
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|e| LoopError::Io {
-                    path: path.display().to_string(),
-                    cause: e.to_string(),
-                })?
-                .to_string_lossy()
-                .to_string();
-            out.push(rel);
-        }
-    }
-
-    Ok(())
-}
-
-fn build_step_file_context(
-    project_root: &Path,
-    files: &[String],
-    step_index: usize,
-) -> Result<String, LoopError> {
-    let mut out = String::new();
-
-    for rel in files {
-        let full = validate_path(rel, project_root).map_err(|e| LoopError::InvalidPlanPath {
-            step_index,
-            path: rel.clone(),
-            reason: e.to_string(),
-        })?;
-
-        match fs::read_to_string(&full) {
-            Ok(content) => {
-                out.push_str(&format_file_context(rel, &content));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                out.push_str(&format!("=== {rel} ===\n<missing file>\n"));
-            }
-            Err(e) => {
-                return Err(LoopError::Io {
-                    path: full.display().to_string(),
-                    cause: e.to_string(),
-                });
-            }
-        }
-        out.push('\n');
-    }
-
-    Ok(out)
-}
-
-/// Truncate a string for context inclusion, snapping to a UTF-8 boundary.
-fn truncate_context(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    let kept = &s[..end];
-    format!("{kept}\n\n... [truncated {} bytes] ...", s.len() - end)
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +785,10 @@ mod tests {
         };
 
         let err = run(&provider, "goal", &config).unwrap_err();
-        assert!(matches!(err, LoopError::TokenCapExceeded { used: 2, cap: 1 }));
+        assert!(matches!(
+            err,
+            LoopError::TokenCapExceeded { used: 2, cap: 1 }
+        ));
     }
 
     #[test]
@@ -1118,7 +1013,10 @@ mod tests {
 
         let final_path = sandbox.join(".tod/state.json");
         let tmp_path = sandbox.join(".tod/state.json.tmp");
-        assert!(final_path.exists(), "state.json must exist after checkpoint");
+        assert!(
+            final_path.exists(),
+            "state.json must exist after checkpoint"
+        );
         assert!(
             !tmp_path.exists(),
             "state.json.tmp must not remain after checkpoint"

@@ -1,7 +1,10 @@
 [package]
-name = "agent"
+name = "tod"
 version = "0.1.0"
 edition = "2021"
+description = "A minimal Rust coding agent that edits projects via LLM-generated JSON"
+license = "MIT"
+repository = "https://github.com/<your-username>/Tod"
 
 [dependencies]
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
@@ -10,4 +13,3 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 ureq = { version = "3.2.0", features = ["json"] }
-
