@@ -1,6 +1,8 @@
 # ROADMAP.md — Codebase Assessment & Strategic Planning
 
-**Read AGENTS.md first.** All operating principles apply. This document requests analysis and recommendations, not code changes.
+**Read AGENTS.md first.** All operating principles apply.
+
+You are a senior Rust engineer doing a codebase assessment for Tod. This document requests analysis and recommendations, not code changes.
 
 ---
 
@@ -8,106 +10,124 @@
 
 Produce two documents:
 
-1. **`docs/codebase-assessment.md`** — A professional review of Tod's current state.
-2. **`docs/strategic-plan.md`** — Recommendations for what to build next and how.
+1. **`docs/codebase-assessment.md`** — A detailed, structured assessment of the current codebase state (post-Phase 10).
+2. **`docs/strategic-plan.md`** — A concrete plan for next steps, using the living list ([`tod-living-list.md`](tod-living-list.md)), roadmap docs, and implementation logs.
+
+---
+
+## Hard constraints
+
+- Do NOT implement code in this run. This is analysis + planning only.
+- Do NOT suggest speculative features outside the roadmap unless explicitly flagged as "optional future."
+- Be precise: cite specific modules, files, functions, and line counts when making claims.
+- Keep recommendations actionable: each recommendation must include "why," "scope," and "expected risk."
+- If you suspect something, say how to verify it (grep, tests, inspection), don't assert.
+- Base the assessment on what the code actually does, not what the documentation says it does. If they disagree, flag the discrepancy.
+- You may run read-only commands: `grep`, `wc`, `cat`, `find`, `cargo test`, `cargo clippy`. Do not run any commands that modify the codebase.
 
 ---
 
 ## Document 1: Codebase Assessment (`docs/codebase-assessment.md`)
 
-Write a thorough assessment of the codebase as it exists right now. Be specific — cite files, functions, line counts, and patterns. Flag anything that contradicts the architectural invariants in AGENTS.md.
+### A1. Architecture map
 
-### Architecture & module boundaries
-
-- Does each module have a single, clear responsibility?
+Modules and responsibilities. For each module:
+- What is its single responsibility?
 - Are there functions or types that have drifted into the wrong module?
-- Where are the coupling points between modules? Are they narrow (trait/type boundaries) or wide (shared mutable state, implicit conventions)?
+- Where are the coupling points? Are they narrow (trait/type boundaries) or wide (shared mutable state, implicit conventions)?
 
-### Code quality & consistency
+### A2. Correctness & invariants
 
-- Are naming conventions consistent across modules?
-- Are there dead code paths, unused imports, or stale comments?
-- How is error handling — are errors informative, typed, and consistently structured?
-- Are there any `unwrap()` calls in non-test code?
-- Is the test coverage adequate? Are there obvious gaps?
+- Iteration caps, token caps, context byte budgets — are they enforced consistently?
+- LLM retry — is it correctly contained inside the provider?
+- Fingerprint and resume — does the checkpoint round-trip through JSON without data loss?
+- Context ordering — is prompt content deterministic across machines?
+- Concurrency — any shared mutable state or ordering assumptions that could break?
 
-### Safety & correctness
+### A3. Safety model
 
 - Path validation: can any code path bypass the sandbox jail?
 - Edit application: is the transactional rollback complete? Are there edge cases?
-- State serialization: can `RunState` round-trip through JSON without data loss?
+- Command restrictions: is the `cargo`-only whitelist enforced?
 - UTF-8 handling: are all string truncation points boundary-safe?
-- Concurrency: any shared mutable state or ordering assumptions that could break?
 
-### Observability & debuggability
+### A4. Observability & stats
 
 - Can a user diagnose a failed run from logs alone?
 - Are error messages actionable (do they say what went wrong and where)?
 - Is token usage tracking accurate and complete?
+- Are stats semantics correct (billed requests vs. transport retries)?
 
-### Technical debt inventory
+### A5. Code quality
 
-- List every known shortcut, TODO, or deferred decision in the codebase.
-- For each item, assess: is it blocking, annoying, or harmless?
-- Highlight any debt that would compound if features are added on top of it.
+- Naming conventions: consistent across modules?
+- Duplication: any remaining shared logic that should be extracted?
+- Error typing: are errors informative, typed, and consistently structured after Phase 10?
+- Cohesion: are there functions doing too many things?
+- Test coverage: adequate? Obvious gaps?
+- Any `unwrap()` calls in non-test code?
+- Dead code paths, unused imports, stale comments?
+
+### A6. UX surface
+
+- CLI: are all commands, flags, and help text consistent and correct?
+- `--project`: does it work correctly for all commands that accept it?
+- Docs: do README, AGENTS.md, and live-run-log.md match the current binary behavior?
+
+### B. Phase implementation quality
+
+Evaluate Phase 9 and Phase 10 implementation quality specifically:
+- What landed well?
+- What's brittle or could break under future changes?
+- Any patterns introduced that should be reinforced or corrected going forward?
 
 ---
 
 ## Document 2: Strategic Plan (`docs/strategic-plan.md`)
 
-Based on the codebase assessment and the living list in [`tod-living-list.md`](tod-living-list.md), write a strategic plan for Tod's next development phase.
+### C. Remaining work inventory
 
-### Living list review
+Create a prioritized list grouped by:
 
-For each of the 8 items on the current living list:
+| Priority | Meaning |
+|----------|---------|
+| **Must** | Blocks correctness, safety, or usability |
+| **Should** | High value, low risk, do soon |
+| **Nice** | Improves quality but not urgent |
+| **Future** | Feature work, requires dedicated phase |
 
-**Tier 1 items (opportunistic polish, items 1–3):**
-- Is the item still relevant?
-- Should any be promoted to "do before next feature work"?
+Each item must include: payoff, risk, rough effort, and touch points (files/modules).
 
-**Tier 2 items (feature candidates, items 4–8):**
+Reference the current living list in [`tod-living-list.md`](tod-living-list.md) — review each of the 8 items and reassess priority. Add any new items discovered during the codebase assessment.
 
-| # | Feature | Summary |
-|---|---------|---------|
-| 4 | Patch/diff mode | Diff-based edits instead of full file rewrites |
-| 5 | Git branch isolation | Throwaway branch per run, merge on success |
-| 6 | Local model support | Ollama/llama.cpp behind LlmProvider trait |
-| 7 | `--reflect` flag | Self-critique pass on planner output before execution |
-| 8 | Stronger fingerprint | Content hashing for resume correctness |
+### D. Roadmap plan
 
-For each candidate, assess:
-- **Feasibility:** How much code change? Which modules affected? Risk of destabilizing existing functionality?
-- **Value:** What does this unlock for the user? For the developer? For learning?
-- **Dependencies:** Does it require other changes first? Does it conflict with other candidates?
-- **Recommended scope:** If this were a phase, how many tasks? What reasoning level for Codex?
+Propose a 2–4 phase roadmap for the next milestones. For each phase:
 
-### Phase 11 recommendation
+- **Goals:** What does this phase achieve?
+- **Tasks:** Numbered, ordered, with files touched.
+- **Definition of done:** Test count expectation, clippy clean, specific behavioral criteria.
+- **Validation commands:** `cargo test`, `cargo clippy -- -D warnings`, plus any targeted greps.
+- **Codex reasoning level:** Low, medium, high, or xhigh per task.
 
-- Which feature(s) should go into Phase 11?
-- What's the recommended task breakdown?
-- What's the expected test count increase?
-- Are there preparatory changes needed before the main feature work?
+Keep phases small and shippable. Each phase should be completable in a single Codex session.
 
-### Development path
+### D2. Development path
 
 - Of the three strategic paths (reliability, capability, distribution), which should Tod pursue next and why?
 - Is Tod ready for external users beyond the developer, or does more hardening come first?
 - What's the biggest risk to the project right now?
 
-### Living list updates
+---
 
-- Based on the assessment, are there new issues or opportunities to add?
-- Are there items to remove as no longer relevant?
+## Validation commands to reference
 
-### Tone
-
-Be direct — recommend, don't hedge. Where there are genuine tradeoffs, state them and pick a side with reasoning.
+```
+cargo test
+cargo clippy -- -D warnings
+grep / wc / cat / find as needed
+```
 
 ---
 
-## Constraints
-
-- Do not modify any source code.
-- Do not run any commands that change the codebase.
-- You may run read-only commands: `grep`, `wc`, `cat`, `find`, `cargo test` (to verify current state), `cargo clippy`.
-- Base the assessment on what the code actually does, not what the documentation says it does. If they disagree, flag the discrepancy.
+## Start now.
