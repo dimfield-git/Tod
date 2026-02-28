@@ -12,16 +12,16 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current phase (see `PHASE8.md`) → Future phases.
+- **Priority order:** Current phase (see `PHASE9.md`) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
 
 ## Repo Identity
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 121 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 133 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–7 complete. Phase 8 (hardening + budget enforcement) is next.
+Linux-only. No GUI dependencies. Phases 1–8 complete. Phase 9 (working prototype) is next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -36,10 +36,11 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 5 | Runner — cargo pipeline execution, transactional edit apply with rollback, strict mode (`fmt --check` + clippy) | ✅ Done |
 | 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
 | 7 | Observability — `stats.rs` module, read-only analysis from structured logs, per-run and cross-run metrics, CLI `stats` command | ✅ Done |
-| 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | **Next** |
-| 9 | Future extensions — patch mode, git branch isolation, local model support, budget enforcement by cost | Not started |
+| 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
+| 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | **Next** |
+| 10 | Future extensions — patch mode, git branch isolation, local model support, `--reflect` flag | Not started |
 
-**Current phase instructions: see [`PHASE8.md`](PHASE8.md)**
+**Current phase instructions: see [`PHASE9.md`](PHASE9.md)**
 
 ## Golden Path Commands
 
@@ -59,17 +60,18 @@ No external system dependencies beyond a Rust toolchain.
 
 ```
 src/
-  main.rs       Entry point, CLI dispatch (run, resume, status, stats), provider init
-  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume
+  main.rs       Entry point, CLI dispatch (run, resume, status, stats, init), provider init
+  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume, context building
   schema.rs     EditAction types, JSON extraction, path + batch validation
   config.rs     RunConfig, RunMode — immutable after construction
   cli.rs        clap derive CLI, argument-to-config conversion (resume: --project, --force)
-  llm.rs        LlmProvider trait, Anthropic implementation (ureq, blocking)
+  llm.rs        LlmProvider trait, LlmResponse (text + usage), Anthropic impl (ureq, blocking)
   planner.rs    Plan creation prompt, plan semantic validation
   editor.rs     Edit creation prompt, format_file_context()
   runner.rs     Transactional edit apply, cargo pipeline execution
   reviewer.rs   Proceed / Retry / Abort decision logic (pure, no LLM)
   stats.rs      Read-only analysis of .tod/ logs, per-run and cross-run metrics
+  test_util.rs  Shared TempSandbox for tests (#[cfg(test)] only)
 
 docs/
   tod-architecture.html   Interactive module diagram (GitHub Pages)
@@ -92,7 +94,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 
 ## Architectural Invariants
 
-- All I/O goes through `runner.rs`. Core logic in other modules is pure or trait-abstracted.
+- All target-project filesystem mutation goes through `runner.rs`. Core logic in other modules is pure or trait-abstracted.
 - All errors are typed enums via `thiserror`. No `.unwrap()` in non-test code.
 - No global mutable state. All run state lives in `RunState` / `StepState` structs.
 - No async. All LLM calls are blocking via `ureq`. Tokio is explicitly excluded.
@@ -101,8 +103,10 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Do not change JSON schema tags (`write_file`, `replace_range`) without approval.
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
 - Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
-- State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json`; resume loads from it. Fingerprint detects workspace drift between runs.
+- State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json` atomically (tmp + rename); resume loads from it. Fingerprint detects workspace drift between runs.
 - LLM provider trait returns `LlmResponse` (text + optional usage). Loop is the sole accumulator of token usage in `RunState`.
+- Context helpers live in `loop.rs`. Phase 9 will extract them into `context.rs` with byte budgets.
+- LLM transient failures are not yet retried. Phase 9 will add retry with backoff inside the provider.
 
 ## Coding Standards
 
@@ -116,7 +120,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 
 ## Testing Policy
 
-- Every change must leave `cargo test` at ≥ 121 passing, 0 failing.
+- Every change must leave `cargo test` at ≥ 133 passing, 0 failing.
 - Every new public function gets at least one test.
 - Tests live in `#[cfg(test)] mod tests` at the bottom of each module.
 - Use `TempSandbox` from `crate::test_util` for filesystem tests.
