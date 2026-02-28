@@ -12,16 +12,16 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current phase (see `PHASE9.md`) → Future phases.
-- **Per-task done:** Each change must include tests added/updated if applicable, and a suggested verification step.
+- **Priority order:** Current phase (see [`PHASE10.md`](PHASE10.md)) → Future phases.
+- **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 133 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 148 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–8 complete. Phase 9 (working prototype) is next.
+Linux-only. No GUI dependencies. Phases 1–9 complete. Phase 10 (external usability) is next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -37,10 +37,10 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
 | 7 | Observability — `stats.rs` module, read-only analysis from structured logs, per-run and cross-run metrics, CLI `stats` command | ✅ Done |
 | 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
-| 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | **Next** |
-| 10 | Future extensions — patch mode, git branch isolation, local model support, `--reflect` flag | Not started |
+| 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
+| 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | **Next** |
 
-**Current phase instructions: see [`PHASE9.md`](PHASE9.md)**
+**Current phase instructions: see [`PHASE10.md`](PHASE10.md)**
 
 ## Golden Path Commands
 
@@ -52,6 +52,9 @@ Format:     cargo fmt --all --check
 Strict:     cargo fmt --all --check → cargo clippy -- -D warnings → cargo test
 Run:        cargo run -- run --project /path/to/project "goal"
 Dry run:    cargo run -- run --dry-run "goal"
+Init:       cargo run -- init <name>
+Status:     cargo run -- status
+Stats:      cargo run -- stats --last 5
 ```
 
 No external system dependencies beyond a Rust toolchain.
@@ -61,21 +64,23 @@ No external system dependencies beyond a Rust toolchain.
 ```
 src/
   main.rs       Entry point, CLI dispatch (run, resume, status, stats, init), provider init
-  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume, context building
-  schema.rs     EditAction types, JSON extraction, path + batch validation
-  config.rs     RunConfig, RunMode — immutable after construction
   cli.rs        clap derive CLI, argument-to-config conversion (resume: --project, --force)
-  llm.rs        LlmProvider trait, LlmResponse (text + usage), Anthropic impl (ureq, blocking)
+  config.rs     RunConfig, RunMode — immutable after construction
+  context.rs    Context building + byte budgets (planner, step, retry), collect_paths, truncation
+  editor.rs     Edit creation prompt, imports format_file_context from context.rs
+  llm.rs        LlmProvider trait, LlmResponse (text + usage), Anthropic impl (ureq, blocking), retry with backoff
+  loop.rs       Orchestration, RunState/StepState, fingerprint, checkpoint, logging, resume
   planner.rs    Plan creation prompt, plan semantic validation
-  editor.rs     Edit creation prompt, format_file_context()
-  runner.rs     Transactional edit apply, cargo pipeline execution
   reviewer.rs   Proceed / Retry / Abort decision logic (pure, no LLM)
+  runner.rs     Transactional edit apply, cargo pipeline execution
+  schema.rs     EditAction types, JSON extraction, path + batch validation
   stats.rs      Read-only analysis of .tod/ logs, per-run and cross-run metrics
   test_util.rs  Shared TempSandbox for tests (#[cfg(test)] only)
 
 docs/
   tod-architecture.html   Interactive module diagram (GitHub Pages)
   loop-design-final.md    Loop design rationale, state struct docs
+  live-run-log.md         Phase 9 live run transcript and outcomes
   phase6-design.md        Phase 6 design document (logging, checkpoint, resume)
   changes-2026-02-23.md   Detailed change log for loop wiring session
 ```
@@ -95,7 +100,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 ## Architectural Invariants
 
 - All target-project filesystem mutation goes through `runner.rs`. Core logic in other modules is pure or trait-abstracted.
-- All errors are typed enums via `thiserror`. No `.unwrap()` in non-test code.
+- All errors are typed enums. No `.unwrap()` in non-test code.
 - No global mutable state. All run state lives in `RunState` / `StepState` structs.
 - No async. All LLM calls are blocking via `ureq`. Tokio is explicitly excluded.
 - `SYSTEM_PROMPT` constants in `planner.rs` and `editor.rs` are **read-only**. Do not modify these unless explicitly asked — they are product logic, not ordinary strings.
@@ -104,42 +109,5 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
 - Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
 - State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json` atomically (tmp + rename); resume loads from it. Fingerprint detects workspace drift between runs.
-- LLM provider trait returns `LlmResponse` (text + optional usage). Loop is the sole accumulator of token usage in `RunState`.
-- Context helpers live in `loop.rs`. Phase 9 will extract them into `context.rs` with byte budgets.
-- LLM transient failures are not yet retried. Phase 9 will add retry with backoff inside the provider.
-
-## Coding Standards
-
-- Rust 2021 edition. No MSRV constraint.
-- `cargo fmt` is non-negotiable. Run before any commit.
-- Clippy with `-D warnings`. No allowed lints without justification.
-- `unsafe` is forbidden.
-- Typed errors (`thiserror`) everywhere. `anyhow` is not used.
-- Blocking HTTP only (`ureq`). No async runtime.
-- Test helpers use shared `TempSandbox` from `test_util.rs` with RAII `Drop` guard for cleanup.
-
-## Testing Policy
-
-- Every change must leave `cargo test` at ≥ 133 passing, 0 failing.
-- Every new public function gets at least one test.
-- Tests live in `#[cfg(test)] mod tests` at the bottom of each module.
-- Use `TempSandbox` from `crate::test_util` for filesystem tests.
-- The one ignored test (`llm.rs` live API smoke) stays ignored in normal runs.
-- No network calls from tests except the ignored smoke test.
-
-## Safety Boundaries
-
-- Never log or print API keys or tokens.
-- Only `cargo` commands may be executed by the runner.
-- Do not weaken path sandbox checks to make something work.
-- No new network-calling code outside `llm.rs`.
-
-## Environment
-
-- IDE: RustRover (JetBrains)
-- OS: Linux
-- Shell: bash
-- Repo location: `~/Agents/Tod/`
-- LLM provider: Anthropic (Claude) via `ANTHROPIC_API_KEY` env var
-- Provider config: `TOD_MODEL` (default: `claude-sonnet-4-5-20250929`), `TOD_RESPONSE_MAX_TOKENS` (default: `4096`)
-- Key dependencies: `ureq` (HTTP), `serde`/`serde_json` (JSON), `clap` (CLI), `sha2` (fingerprint), `chrono` (timestamps)
+- Context building lives in `context.rs` with explicit byte budgets. Planner context (128 KiB), step context (64 KiB), retry context (8 KiB). All truncation is UTF-8 safe.
+- LLM retry (429, 500, 502, 503, network errors) is handled inside `AnthropicProvider::complete()` with exponential backoff + jitter. The orchestration loop never sees transient transport failures.

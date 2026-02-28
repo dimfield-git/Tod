@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tod — Module Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0f0f1a;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    color: #c9d1d9;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  .container { max-width: 1100px; margin: 0 auto; }
+
+  .header {
+    margin-bottom: 24px;
+    border-bottom: 1px solid #222;
+    padding-bottom: 16px;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.04em; }
+  .header h1 span { color: #a855f7; }
+  .header p { font-size: 12px; color: #555; margin-top: 6px; }
+
+  .filters { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  .filters button {
+    background: transparent;
+    border: 1px solid #333;
+    color: #666;
+    padding: 5px 14px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .filters button:hover { border-color: #555; color: #999; }
+  .filters button.active { border-color: var(--btn-color); color: var(--btn-color); background: var(--btn-bg); }
+
+  .layout { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .diagram-wrap { flex: 1 1 auto; min-width: 400px; position: relative; }
+
+  svg { width: 100%; height: auto; display: block; }
+  .mod-box { cursor: pointer; transition: opacity 0.25s; }
+  .mod-box.dimmed { opacity: 0.25; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    margin-top: 8px; padding-top: 12px;
+    border-top: 1px solid #1a1a2e;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .legend-label { font-size: 10px; color: #555; }
+
+  .panel {
+    width: 320px; min-width: 280px; flex-shrink: 0;
+    background: #141422;
+    border: 1px solid #222;
+    border-radius: 8px;
+    padding: 20px;
+    transition: border-color 0.3s;
+  }
+  .panel-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .panel-subtitle {
+    font-size: 10px; color: #555;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 12px;
+  }
+  .panel-desc { font-size: 12px; line-height: 1.6; color: #999; margin-bottom: 16px; }
+  .panel-section-label {
+    font-size: 10px; color: #555;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 8px;
+  }
+  .panel-interaction {
+    font-size: 11px; color: #777;
+    padding: 4px 0; line-height: 1.5;
+    border-bottom: 1px solid #1a1a2e;
+  }
+  .panel-interaction:last-child { border-bottom: none; }
+  .panel-interaction .marker { margin-right: 6px; }
+
+  .dep-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .dep-tag {
+    font-size: 10px; padding: 3px 8px; border-radius: 3px; cursor: pointer;
+  }
+
+  .default-panel { color: #444; font-size: 12px; line-height: 1.7; }
+  .default-panel .flow-title { font-size: 13px; color: #666; margin-bottom: 12px; font-weight: 600; }
+  .default-panel .flow-list { color: #555; font-size: 11px; }
+  .default-panel .flow-item { margin-bottom: 8px; }
+  .default-panel .flow-sub { padding-left: 16px; margin-bottom: 8px; border-left: 2px solid rgba(168,85,247,0.2); }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1><span>Tod</span> — Module Architecture</h1>
+    <p>Click any module for details. Use phase filters to trace data flow.</p>
+  </div>
+
+  <div class="filters" id="filters"></div>
+
+  <div class="layout">
+    <div class="diagram-wrap">
+      <svg id="svg" viewBox="0 0 800 760"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="panel" id="panel"></div>
+  </div>
+</div>
+
+<script>
+const MODULES = {
+  main:     { label:"main.rs",     subtitle:"Crate Root",         role:"entry",        x:400, y:40,  connections:["cli","llm","loop"],
+    desc:"Entry point. Parses CLI, initializes the LLM provider, dispatches to the orchestration loop. Handles exit codes.",
+    interactions:["Calls Cli::parse() to get command","Calls Command::into_run_config() for Run variant","Initializes AnthropicProvider::from_env()","Calls loop::run(provider, goal, config)","Prints LoopReport on success, exits non-zero on error"]},
+  cli:      { label:"cli.rs",      subtitle:"CLI & Config Bridge", role:"input",        x:140, y:160, connections:["config"],
+    desc:"Defines commands (Run, Init, Resume, Status) via clap. Converts Run arguments into a RunConfig. Validates --max-iters \u2265 1.",
+    interactions:["Defines Cli struct with clap derive macros","Command::into_run_config() \u2192 Option<(String, RunConfig)>","parse_max_iters() rejects zero at parse time","max_total_iterations = max_iters.saturating_mul(5)"]},
+  config:   { label:"config.rs",   subtitle:"Run Configuration",  role:"data",         x:140, y:310, connections:[],
+    desc:"Pure data. RunConfig holds project root, mode, iteration caps, dry-run flag, output size limit. RunMode selects Default or Strict pipeline. Immutable once constructed.",
+    interactions:["RunConfig: project_root, mode, caps, dry_run, max_runner_output_bytes","RunMode::Default \u2192 build + test","RunMode::Strict \u2192 fmt --check + clippy + test","Default impl provides sane starting values","Read by loop.rs and runner.rs, never mutated"]},
+  llm:      { label:"llm.rs",      subtitle:"LLM Provider",       role:"external",     x:660, y:160, connections:[],
+    desc:"Defines the LlmProvider trait (blocking, object-safe). Implements AnthropicProvider: reads API key from env, sends system+user prompts, extracts response text. Handles API errors explicitly.",
+    interactions:["trait LlmProvider { fn complete(system, user) \u2192 Result<String, LlmError> }","AnthropicProvider::from_env() reads ANTHROPIC_API_KEY","Sends JSON to api.anthropic.com/v1/messages","Disables ureq auto-error, maps HTTP \u2265400 \u2192 LlmError::ApiError","safe_preview() for UTF-8-safe error truncation"]},
+  loop:     { label:"loop.rs",     subtitle:"Orchestrator",        role:"orchestrator", x:400, y:310, connections:["planner","editor","runner","reviewer","schema","config","llm"],
+    desc:"Drives the full cycle. Owns RunState (with nested StepState) for inspectable, serializable progress. Builds project and file context, coordinates planner \u2192 editor \u2192 runner \u2192 reviewer, enforces both iteration caps, checkpoints every exit path.",
+    interactions:["build_project_context() \u2192 file tree + Cargo.toml for planner","Calls create_plan(provider, goal, context)","RunState::new(goal, plan, config) \u2014 owns plan, copies caps","Per step: build_step_file_context() with validate_path()","Calls create_edits() \u2192 apply_edits() \u2192 run_pipeline() \u2192 review()","StepState reset at each step boundary","Checkpoint stub at every exit path (Phase 6 wires to disk)"]},
+  planner:  { label:"planner.rs",  subtitle:"Plan Creation",      role:"llm_role",     x:180, y:480, connections:["llm","schema"],
+    desc:"Sends goal + project context to LLM with a system prompt that constrains output to a JSON plan. Parses via extract_json<Plan>. Validates: no empty steps, no empty files, no absolute paths, no traversal.",
+    interactions:["SYSTEM_PROMPT defines plan JSON schema","create_plan(provider, goal, context) \u2192 Result<Plan, PlanError>","Uses schema::extract_json<Plan>() for robust parsing","validate_plan() rejects empty descriptions, empty file lists, absolute paths, path traversal","Plan and PlanStep derive Serialize + Deserialize"]},
+  editor:   { label:"editor.rs",   subtitle:"Edit Generation",    role:"llm_role",     x:400, y:480, connections:["llm","schema"],
+    desc:"Sends plan step + numbered file contents to LLM. Parses response into EditBatch via extract_json<EditBatch>. Validates batch against sandbox. Also provides format_file_context() for numbered-line display.",
+    interactions:["SYSTEM_PROMPT defines edit actions + rules + caps","format_file_context(path, content) \u2192 numbered lines","create_edits(provider, step, file_context, sandbox) \u2192 EditBatch","Uses schema::extract_json<EditBatch>()","Calls schema::validate_batch() for path + semantic checks"]},
+  runner:   { label:"runner.rs",   subtitle:"Apply & Execute",    role:"execution",    x:620, y:480, connections:["schema","config"],
+    desc:"Two jobs: (1) apply edits transactionally with rollback on failure, (2) run the cargo quality pipeline. Handles WriteFile and ReplaceRange with CRLF preservation, trailing newline fidelity, and UTF-8 guards.",
+    interactions:["apply_edits(batch, sandbox) \u2014 snapshots files, rolls back on error","WriteFile: creates parent dirs, writes content","ReplaceRange: CRLF-aware, preserves trailing newline, splice-based","run_pipeline(config) \u2192 RunResult::Success | Failure{stage, output}","stages_for_mode(): Default=[build,test], Strict=[fmt --check,clippy,test]","truncate_output() snaps to line boundary, UTF-8 safe"]},
+  reviewer: { label:"reviewer.rs", subtitle:"Decision Logic",     role:"decision",     x:620, y:640, connections:[],
+    desc:"Pure function, no LLM. Takes RunResult + iteration count + cap, returns Proceed (success), Retry (with error context), or Abort (hit cap). Deterministic \u2014 the simplest module.",
+    interactions:["review(result, iteration, max) \u2192 ReviewDecision","Success \u2192 Proceed (always)","Failure + under cap \u2192 Retry { error_context }","Failure + at/over cap \u2192 Abort { reason }","Pure logic, no side effects, no LLM calls"]},
+  schema:   { label:"schema.rs",   subtitle:"Types & Validation", role:"validation",   x:180, y:640, connections:[],
+    desc:"EditAction (WriteFile | ReplaceRange) with tagged JSON deserialization. EditBatch wrapper. Full validation suite: path safety (lexical + symlink), content size, line ranges, batch semantics (duplicates, conflicts, overlaps). Generic extract_json<T> for robust LLM output parsing.",
+    interactions:["EditAction: tagged enum (write_file | replace_range)","EditBatch: Vec<EditAction> wrapper","validate_path(): empty, absolute, traversal, symlink escape","validate_batch(): duplicates, write/replace conflicts, overlapping ranges","validate_content_size(): 512 KiB cap per edit","validate_range(): 1-indexed, start \u2264 end","extract_json<T>(): direct parse \u2192 strip fences \u2192 find braces"]},
+};
+
+const COLORS = {
+  entry:        { border:"#e94560", text:"#e94560", glow:"rgba(233,69,96,0.15)" },
+  input:        { border:"#f5a623", text:"#f5a623", glow:"rgba(245,166,35,0.15)" },
+  data:         { border:"#7b8794", text:"#7b8794", glow:"rgba(123,135,148,0.12)" },
+  external:     { border:"#00d2ff", text:"#00d2ff", glow:"rgba(0,210,255,0.15)" },
+  orchestrator: { border:"#a855f7", text:"#a855f7", glow:"rgba(168,85,247,0.2)" },
+  llm_role:     { border:"#34d399", text:"#34d399", glow:"rgba(52,211,153,0.15)" },
+  execution:    { border:"#fb923c", text:"#fb923c", glow:"rgba(251,146,60,0.15)" },
+  decision:     { border:"#60a5fa", text:"#60a5fa", glow:"rgba(96,165,250,0.15)" },
+  validation:   { border:"#f472b6", text:"#f472b6", glow:"rgba(244,114,182,0.15)" },
+};
+
+const FLOWS = [
+  { from:"main",    to:"cli",      phase:"init" },
+  { from:"cli",     to:"config",   phase:"init" },
+  { from:"main",    to:"llm",      phase:"init" },
+  { from:"main",    to:"loop",     phase:"init" },
+  { from:"loop",    to:"planner",  phase:"plan", },
+  { from:"planner", to:"llm",      phase:"plan", dashed:true },
+  { from:"planner", to:"schema",   phase:"plan", dashed:true },
+  { from:"loop",    to:"editor",   phase:"edit" },
+  { from:"editor",  to:"llm",      phase:"edit", dashed:true },
+  { from:"editor",  to:"schema",   phase:"edit", dashed:true },
+  { from:"loop",    to:"runner",   phase:"run" },
+  { from:"runner",  to:"schema",   phase:"run",  dashed:true },
+  { from:"loop",    to:"reviewer", phase:"run" },
+];
+
+const PHASES = [
+  { id:"all",  label:"All",          color:"#fff" },
+  { id:"init", label:"Initialization",color:"#e94560" },
+  { id:"plan", label:"Planning",     color:"#34d399" },
+  { id:"edit", label:"Editing",      color:"#34d399" },
+  { id:"run",  label:"Run & Review", color:"#fb923c" },
+];
+
+const LEGENDS = [
+  { role:"entry",       label:"Entry" },
+  { role:"input",       label:"CLI" },
+  { role:"data",        label:"Config" },
+  { role:"external",    label:"External API" },
+  { role:"orchestrator",label:"Orchestrator" },
+  { role:"llm_role",    label:"LLM Roles" },
+  { role:"execution",   label:"Execution" },
+  { role:"decision",    label:"Decision" },
+  { role:"validation",  label:"Validation" },
+];
+
+const BW = 150, BH = 58;
+let selected = null, phase = "all";
+
+function center(id) {
+  const m = MODULES[id];
+  return { x: m.x + BW/2, y: m.y + BH/2 };
+}
+
+function curve(from, to) {
+  const a = center(from), b = center(to);
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+  return `M ${a.x} ${a.y} Q ${mx - dy*0.15} ${my + dx*0.15} ${b.x} ${b.y}`;
+}
+
+function visibleFlows() {
+  return phase === "all" ? FLOWS : FLOWS.filter(f => f.phase === phase);
+}
+
+function highlightedIds() {
+  if (phase === "all") return null;
+  const s = new Set();
+  visibleFlows().forEach(f => { s.add(f.from); s.add(f.to); });
+  return s;
+}
+
+function renderSvg() {
+  const svg = document.getElementById("svg");
+  const ns = "http://www.w3.org/2000/svg";
+  svg.innerHTML = "";
+
+  // Defs
+  const defs = document.createElementNS(ns, "defs");
+  [["arrow","#444"],["arrow-hi","#a855f7"]].forEach(([id,fill]) => {
+    const m = document.createElementNS(ns, "marker");
+    m.setAttribute("id", id);
+    m.setAttribute("markerWidth","8"); m.setAttribute("markerHeight","6");
+    m.setAttribute("refX","8"); m.setAttribute("refY","3"); m.setAttribute("orient","auto");
+    const p = document.createElementNS(ns, "path");
+    p.setAttribute("d","M 0 0 L 8 3 L 0 6 Z"); p.setAttribute("fill", fill);
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  const hi = highlightedIds();
+  const isFiltered = phase !== "all";
+
+  // Flow lines
+  visibleFlows().forEach(f => {
+    const p = document.createElementNS(ns, "path");
+    p.setAttribute("d", curve(f.from, f.to));
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", isFiltered ? "#a855f7" : "#333");
+    p.setAttribute("stroke-width", f.dashed ? "1" : "1.5");
+    if (f.dashed) p.setAttribute("stroke-dasharray", "4 3");
+    p.setAttribute("marker-end", isFiltered ? "url(#arrow-hi)" : "url(#arrow)");
+    p.setAttribute("opacity", "0.7");
+    svg.appendChild(p);
+  });
+
+  // Module boxes
+  Object.entries(MODULES).forEach(([id, m]) => {
+    const c = COLORS[m.role];
+    const isSel = selected === id;
+    const dimmed = hi && !hi.has(id);
+    const g = document.createElementNS(ns, "g");
+    g.setAttribute("class", "mod-box" + (dimmed ? " dimmed" : ""));
+    g.style.cursor = "pointer";
+    g.addEventListener("click", () => { selected = (selected === id ? null : id); render(); });
+
+    if (isSel) {
+      const glow = document.createElementNS(ns, "rect");
+      glow.setAttribute("x", m.x-3); glow.setAttribute("y", m.y-3);
+      glow.setAttribute("width", BW+6); glow.setAttribute("height", BH+6);
+      glow.setAttribute("rx","8"); glow.setAttribute("fill","none");
+      glow.setAttribute("stroke", c.border); glow.setAttribute("stroke-width","2");
+      glow.setAttribute("opacity","0.4");
+      g.appendChild(glow);
+    }
+
+    const r = document.createElementNS(ns, "rect");
+    r.setAttribute("x", m.x); r.setAttribute("y", m.y);
+    r.setAttribute("width", BW); r.setAttribute("height", BH);
+    r.setAttribute("rx","6"); r.setAttribute("fill","#1a1a2e");
+    r.setAttribute("stroke", c.border); r.setAttribute("stroke-width", isSel?"2":"1");
+    g.appendChild(r);
+
+    const t1 = document.createElementNS(ns, "text");
+    t1.setAttribute("x", m.x+BW/2); t1.setAttribute("y", m.y+22);
+    t1.setAttribute("text-anchor","middle"); t1.setAttribute("fill", c.text);
+    t1.setAttribute("font-size","11"); t1.setAttribute("font-weight","700");
+    t1.setAttribute("font-family","inherit");
+    t1.textContent = m.label;
+    g.appendChild(t1);
+
+    const t2 = document.createElementNS(ns, "text");
+    t2.setAttribute("x", m.x+BW/2); t2.setAttribute("y", m.y+40);
+    t2.setAttribute("text-anchor","middle"); t2.setAttribute("fill","#666");
+    t2.setAttribute("font-size","9"); t2.setAttribute("font-family","inherit");
+    t2.textContent = m.subtitle;
+    g.appendChild(t2);
+
+    svg.appendChild(g);
+  });
+}
+
+function renderFilters() {
+  const el = document.getElementById("filters");
+  el.innerHTML = "";
+  PHASES.forEach(p => {
+    const btn = document.createElement("button");
+    btn.textContent = p.label;
+    btn.style.setProperty("--btn-color", p.color);
+    btn.style.setProperty("--btn-bg", p.color + "22");
+    if (phase === p.id) btn.classList.add("active");
+    btn.addEventListener("click", () => { phase = p.id; render(); });
+    el.appendChild(btn);
+  });
+}
+
+function renderLegend() {
+  const el = document.getElementById("legend");
+  el.innerHTML = "";
+  LEGENDS.forEach(l => {
+    const c = COLORS[l.role];
+    const d = document.createElement("div");
+    d.className = "legend-item";
+    d.innerHTML = `<div class="legend-swatch" style="border:1.5px solid ${c.border};background:${c.glow}"></div><span class="legend-label">${l.label}</span>`;
+    el.appendChild(d);
+  });
+}
+
+function renderPanel() {
+  const el = document.getElementById("panel");
+  if (!selected) {
+    el.style.borderColor = "#222";
+    el.innerHTML = `
+      <div class="default-panel">
+        <div class="flow-title">Agent Loop Flow</div>
+        <div class="flow-list">
+          <div class="flow-item"><span style="color:#e94560">\u2460</span> main.rs parses CLI \u2192 builds RunConfig</div>
+          <div class="flow-item"><span style="color:#00d2ff">\u2461</span> Initializes LLM provider from env</div>
+          <div class="flow-item"><span style="color:#a855f7">\u2462</span> loop.rs orchestrates the cycle:</div>
+          <div class="flow-sub">
+            <div><span style="color:#34d399">\u2192</span> planner creates step list</div>
+            <div><span style="color:#34d399">\u2192</span> editor generates edit batches</div>
+            <div><span style="color:#fb923c">\u2192</span> runner applies + runs cargo</div>
+            <div><span style="color:#60a5fa">\u2192</span> reviewer decides next action</div>
+          </div>
+          <div class="flow-item"><span style="color:#f472b6">\u2463</span> schema.rs validates everything between modules</div>
+          <div class="flow-item"><span style="color:#7b8794">\u2464</span> RunState checkpoints at every exit</div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const m = MODULES[selected];
+  const c = COLORS[m.role];
+  el.style.borderColor = c.border;
+
+  let html = `
+    <div class="panel-title" style="color:${c.text}">${m.label}</div>
+    <div class="panel-subtitle">${m.subtitle}</div>
+    <p class="panel-desc">${m.desc}</p>
+    <div class="panel-section-label">Key interactions</div>`;
+
+  m.interactions.forEach((line, i) => {
+    const bb = i < m.interactions.length-1 ? "1px solid #1a1a2e" : "none";
+    html += `<div class="panel-interaction" style="border-bottom:${bb}"><span class="marker" style="color:${c.border}">\u203a</span>${line}</div>`;
+  });
+
+  if (m.connections.length) {
+    html += `<div class="panel-section-label" style="margin-top:16px">Depends on</div><div class="dep-tags">`;
+    m.connections.forEach(cid => {
+      const cc = COLORS[MODULES[cid].role];
+      html += `<span class="dep-tag" style="background:${cc.glow};border:1px solid ${cc.border}44;color:${cc.text}" data-target="${cid}">${MODULES[cid].label}</span>`;
+    });
+    html += `</div>`;
+  }
+
+  el.innerHTML = html;
+
+  el.querySelectorAll(".dep-tag").forEach(tag => {
+    tag.addEventListener("click", e => {
+      e.stopPropagation();
+      selected = tag.dataset.target;
+      render();
+    });
+  });
+}
+
+function render() {
+  renderFilters();
+  renderSvg();
+  renderPanel();
+}
+
+renderLegend();
+render();
+</script>
+</body>
+</html>
