@@ -12,7 +12,7 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current phase (see [`PHASE10.md`](PHASE10.md)) → Future phases.
+- **Priority order:** Current instructions (see [`ROADMAP.md`](ROADMAP.md)) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
@@ -40,7 +40,7 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
 | 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | ✅ Done |
 
-**Phase 10 instructions reference:** [`PHASE10.md`](PHASE10.md)
+**Current instructions: see [`ROADMAP.md`](ROADMAP.md)**
 
 ## Golden Path Commands
 
@@ -75,7 +75,7 @@ src/
   runner.rs     Transactional edit apply, cargo pipeline execution
   schema.rs     EditAction types, JSON extraction, path + batch validation
   stats.rs      Read-only analysis of .tod/ logs, per-run and cross-run metrics
-  util.rs       Shared helpers: safe_preview, warn macro
+  util.rs       Shared helpers: safe_preview, warn! macro
   test_util.rs  Shared TempSandbox for tests (#[cfg(test)] only)
 
 docs/
