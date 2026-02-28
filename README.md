@@ -1,6 +1,9 @@
 # Tod
+<img width="1536" height="1024" alt="ChatGPT Image Feb 22, 2026, 11_27_52 PM" src="https://github.com/user-attachments/assets/ec2dacad-a425-47de-a9c5-1f8978378d28" />
 
 Tod is a minimal Rust coding agent that plans work with an LLM, generates JSON edit batches, validates and applies edits transactionally, runs cargo pipelines, and iterates until success or a configured cap.
+
+- [`docs/tod-architecture.html`](https://dimfield-git.github.io/Tod/tod-architecture.html) — Interactive module architecture diagram
 
 ## Quick Start
 
@@ -55,3 +58,6 @@ src/
 ## Status
 
 Prototype: Phases 1-9 complete.
+
+<img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/1186b466-ce17-4bf3-af6f-157662fae955" />
+
