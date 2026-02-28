@@ -19,9 +19,9 @@
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 148 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 154 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–9 complete. Phase 10 (external usability) is next.
+Linux-only. No GUI dependencies. Phases 1–10 complete.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -38,9 +38,9 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 7 | Observability — `stats.rs` module, read-only analysis from structured logs, per-run and cross-run metrics, CLI `stats` command | ✅ Done |
 | 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
 | 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
-| 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | **Next** |
+| 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | ✅ Done |
 
-**Current phase instructions: see [`PHASE10.md`](PHASE10.md)**
+**Phase 10 instructions reference:** [`PHASE10.md`](PHASE10.md)
 
 ## Golden Path Commands
 
@@ -75,6 +75,7 @@ src/
   runner.rs     Transactional edit apply, cargo pipeline execution
   schema.rs     EditAction types, JSON extraction, path + batch validation
   stats.rs      Read-only analysis of .tod/ logs, per-run and cross-run metrics
+  util.rs       Shared helpers: safe_preview, warn macro
   test_util.rs  Shared TempSandbox for tests (#[cfg(test)] only)
 
 docs/

@@ -10,7 +10,7 @@ use crate::config::{RunConfig, RunMode};
 
 /// A minimal coding agent that edits Rust projects via LLM-generated JSON.
 #[derive(Debug, Parser)]
-#[command(name = "agent", version)]
+#[command(name = "tod", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -66,10 +66,18 @@ pub enum Command {
     },
 
     /// Show the status of the last run.
-    Status,
+    Status {
+        /// Path to the target project root.
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+    },
 
     /// Analyze run history.
     Stats {
+        /// Path to the target project root.
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+
         /// Number of recent runs to summarize.
         #[arg(long, default_value = "5")]
         last: usize,
@@ -138,7 +146,7 @@ mod tests {
 
     #[test]
     fn parse_run_defaults() {
-        let cli = parse(&["agent", "run", "add a hello world function"]);
+        let cli = parse(&["tod", "run", "add a hello world function"]);
         match cli.command {
             Command::Run {
                 goal,
@@ -161,7 +169,7 @@ mod tests {
     #[test]
     fn parse_run_strict_with_flags() {
         let cli = parse(&[
-            "agent",
+            "tod",
             "run",
             "--strict",
             "--max-iters",
@@ -185,7 +193,7 @@ mod tests {
 
     #[test]
     fn parse_run_dry_run() {
-        let cli = parse(&["agent", "run", "--dry-run", "test goal"]);
+        let cli = parse(&["tod", "run", "--dry-run", "test goal"]);
         match cli.command {
             Command::Run { dry_run, .. } => assert!(dry_run),
             other => panic!("expected Run, got {other:?}"),
@@ -194,31 +202,52 @@ mod tests {
 
     #[test]
     fn parse_init() {
-        let cli = parse(&["agent", "init", "myproject"]);
+        let cli = parse(&["tod", "init", "myproject"]);
         assert!(matches!(cli.command, Command::Init { name } if name == "myproject"));
     }
 
     #[test]
     fn parse_status() {
-        let cli = parse(&["agent", "status"]);
-        assert!(matches!(cli.command, Command::Status));
+        let cli = parse(&["tod", "status"]);
+        assert!(matches!(
+            cli.command,
+            Command::Status { project } if project == PathBuf::from(".")
+        ));
+
+        let cli = parse(&["tod", "status", "--project", "myproj"]);
+        assert!(matches!(
+            cli.command,
+            Command::Status { project } if project == PathBuf::from("myproj")
+        ));
     }
 
     #[test]
     fn parse_stats_default() {
-        let cli = parse(&["agent", "stats"]);
-        assert!(matches!(cli.command, Command::Stats { last } if last == 5));
+        let cli = parse(&["tod", "stats"]);
+        assert!(matches!(
+            cli.command,
+            Command::Stats { project, last } if project == PathBuf::from(".") && last == 5
+        ));
     }
 
     #[test]
     fn parse_stats_with_last() {
-        let cli = parse(&["agent", "stats", "--last", "9"]);
-        assert!(matches!(cli.command, Command::Stats { last } if last == 9));
+        let cli = parse(&["tod", "stats", "--last", "9"]);
+        assert!(matches!(
+            cli.command,
+            Command::Stats { project, last } if project == PathBuf::from(".") && last == 9
+        ));
+
+        let cli = parse(&["tod", "stats", "--project", "myproj", "--last", "9"]);
+        assert!(matches!(
+            cli.command,
+            Command::Stats { project, last } if project == PathBuf::from("myproj") && last == 9
+        ));
     }
 
     #[test]
     fn run_config_conversion() {
-        let cli = parse(&["agent", "run", "--strict", "--max-iters", "8", "do stuff"]);
+        let cli = parse(&["tod", "run", "--strict", "--max-iters", "8", "do stuff"]);
         let (goal, config) = cli.command.into_run_config().unwrap();
         assert_eq!(goal, "do stuff");
         assert_eq!(config.mode, RunMode::Strict);
@@ -231,13 +260,13 @@ mod tests {
 
     #[test]
     fn non_run_returns_none() {
-        let cli = parse(&["agent", "status"]);
+        let cli = parse(&["tod", "status"]);
         assert!(cli.command.into_run_config().is_none());
     }
 
     #[test]
     fn reject_zero_max_iters() {
-        let result = Cli::try_parse_from(["agent", "run", "--max-iters", "0", "goal"]);
+        let result = Cli::try_parse_from(["tod", "run", "--max-iters", "0", "goal"]);
         assert!(result.is_err());
     }
 }

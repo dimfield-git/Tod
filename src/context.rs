@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::schema::validate_path;
 
@@ -21,12 +22,13 @@ pub(crate) const MAX_LISTED_FILES: usize = 200;
 #[derive(Debug)]
 pub enum ContextError {
     Io {
-        path: String,
-        cause: String,
+        path: PathBuf,
+        kind: io::ErrorKind,
+        message: String,
     },
     InvalidPath {
         step_index: usize,
-        path: String,
+        path: PathBuf,
         reason: String,
     },
 }
@@ -34,15 +36,22 @@ pub enum ContextError {
 impl std::fmt::Display for ContextError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io { path, cause } => write!(f, "I/O error for {path}: {cause}"),
+            Self::Io {
+                path,
+                kind: _kind,
+                message,
+            } => {
+                write!(f, "I/O error for {}: {message}", path.display())
+            }
             Self::InvalidPath {
                 step_index,
                 path,
                 reason,
             } => write!(
                 f,
-                "invalid plan path at step {} ({path}): {reason}",
-                step_index + 1
+                "invalid plan path at step {} ({}): {reason}",
+                step_index + 1,
+                path.display()
             ),
         }
     }
@@ -102,7 +111,7 @@ pub fn build_step_context(
     for rel in files {
         let full = validate_path(rel, project_root).map_err(|e| ContextError::InvalidPath {
             step_index,
-            path: rel.clone(),
+            path: PathBuf::from(rel),
             reason: e.to_string(),
         })?;
 
@@ -113,8 +122,9 @@ pub fn build_step_context(
             }
             Err(e) => {
                 return Err(ContextError::Io {
-                    path: full.display().to_string(),
-                    cause: e.to_string(),
+                    path: full.clone(),
+                    kind: e.kind(),
+                    message: e.to_string(),
                 });
             }
         };
@@ -206,19 +216,22 @@ fn collect_paths(
     }
 
     let entries = fs::read_dir(dir).map_err(|e| ContextError::Io {
-        path: dir.display().to_string(),
-        cause: e.to_string(),
+        path: dir.to_path_buf(),
+        kind: e.kind(),
+        message: e.to_string(),
     })?;
 
     for entry in entries {
         let entry = entry.map_err(|e| ContextError::Io {
-            path: dir.display().to_string(),
-            cause: e.to_string(),
+            path: dir.to_path_buf(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
         let path = entry.path();
         let ty = entry.file_type().map_err(|e| ContextError::Io {
-            path: path.display().to_string(),
-            cause: e.to_string(),
+            path: path.clone(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
 
         if ty.is_dir() {
@@ -231,8 +244,9 @@ fn collect_paths(
             let rel = path
                 .strip_prefix(root)
                 .map_err(|e| ContextError::Io {
-                    path: path.display().to_string(),
-                    cause: e.to_string(),
+                    path: path.clone(),
+                    kind: io::ErrorKind::InvalidData,
+                    message: e.to_string(),
                 })?
                 .to_string_lossy()
                 .to_string();
@@ -439,5 +453,18 @@ mod tests {
         assert!(!files.iter().any(|p| p.starts_with(".git/")));
         assert!(!files.iter().any(|p| p.starts_with("target/")));
         assert!(!files.iter().any(|p| p.starts_with(".tod/")));
+    }
+
+    #[test]
+    fn context_error_io_display() {
+        let err = ContextError::Io {
+            path: PathBuf::from("src/main.rs"),
+            kind: io::ErrorKind::NotFound,
+            message: "no such file".to_string(),
+        };
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("I/O error for src/main.rs"));
+        assert!(rendered.contains("no such file"));
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
@@ -53,17 +54,30 @@ pub struct MultiRunSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatsError {
     NoData,
-    Io { path: String, cause: String },
-    InvalidLog { path: String, reason: String },
+    Io {
+        path: PathBuf,
+        kind: io::ErrorKind,
+        message: String,
+    },
+    InvalidLog {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for StatsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoData => write!(f, "no run data available"),
-            Self::Io { path, cause } => write!(f, "I/O error for {path}: {cause}"),
+            Self::Io {
+                path,
+                kind: _kind,
+                message,
+            } => {
+                write!(f, "I/O error for {}: {message}", path.display())
+            }
             Self::InvalidLog { path, reason } => {
-                write!(f, "invalid log at {path}: {reason}")
+                write!(f, "invalid log at {}: {reason}", path.display())
             }
         }
     }
@@ -73,11 +87,12 @@ impl std::error::Error for StatsError {}
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, StatsError> {
     let json = fs::read_to_string(path).map_err(|e| StatsError::Io {
-        path: path.display().to_string(),
-        cause: e.to_string(),
+        path: path.to_path_buf(),
+        kind: e.kind(),
+        message: e.to_string(),
     })?;
     serde_json::from_str(&json).map_err(|e| StatsError::InvalidLog {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         reason: e.to_string(),
     })
 }
@@ -116,19 +131,22 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
 
     let mut attempt_files = Vec::new();
     let reader = fs::read_dir(run_log_dir).map_err(|e| StatsError::Io {
-        path: run_log_dir.display().to_string(),
-        cause: e.to_string(),
+        path: run_log_dir.to_path_buf(),
+        kind: e.kind(),
+        message: e.to_string(),
     })?;
 
     for entry in reader {
         let entry = entry.map_err(|e| StatsError::Io {
-            path: run_log_dir.display().to_string(),
-            cause: e.to_string(),
+            path: run_log_dir.to_path_buf(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
 
         let file_type = entry.file_type().map_err(|e| StatsError::Io {
-            path: entry.path().display().to_string(),
-            cause: e.to_string(),
+            path: entry.path(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
         if !file_type.is_file() {
             continue;
@@ -242,7 +260,7 @@ pub fn summarize_current(project_root: &Path) -> Result<RunSummary, StatsError> 
     let state: RunState = read_json(&state_path)?;
     if state.run_id.trim().is_empty() || state.log_dir.trim().is_empty() {
         return Err(StatsError::InvalidLog {
-            path: state_path.display().to_string(),
+            path: state_path,
             reason: "missing run_id or log_dir".to_string(),
         });
     }
@@ -258,18 +276,21 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
 
     let mut run_dirs: Vec<String> = Vec::new();
     let reader = fs::read_dir(&logs_dir).map_err(|e| StatsError::Io {
-        path: logs_dir.display().to_string(),
-        cause: e.to_string(),
+        path: logs_dir.clone(),
+        kind: e.kind(),
+        message: e.to_string(),
     })?;
 
     for entry in reader {
         let entry = entry.map_err(|e| StatsError::Io {
-            path: logs_dir.display().to_string(),
-            cause: e.to_string(),
+            path: logs_dir.clone(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
         let file_type = entry.file_type().map_err(|e| StatsError::Io {
-            path: entry.path().display().to_string(),
-            cause: e.to_string(),
+            path: entry.path(),
+            kind: e.kind(),
+            message: e.to_string(),
         })?;
         if file_type.is_dir() {
             run_dirs.push(entry.file_name().to_string_lossy().to_string());

@@ -9,6 +9,7 @@ mod reviewer;
 mod runner;
 mod schema;
 mod stats;
+mod util;
 #[cfg(test)]
 mod test_util;
 
@@ -84,7 +85,7 @@ fn main() {
                 }
             }
         }
-        Command::Status => match stats::summarize_current(std::path::Path::new(".")) {
+        Command::Status { project } => match stats::summarize_current(&project) {
             Ok(summary) => println!("{}", stats::format_run_summary(&summary)),
             Err(stats::StatsError::NoData) => {
                 eprintln!("no run data found (.tod/state.json missing or logs unavailable)");
@@ -95,8 +96,9 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Stats { last } => {
-            match stats::summarize_runs(std::path::Path::new(".tod"), last) {
+        Command::Stats { project, last } => {
+            let tod_dir = project.join(".tod");
+            match stats::summarize_runs(&tod_dir, last) {
                 Ok(summary) => println!("{}", stats::format_multi_run_summary(&summary)),
                 Err(stats::StatsError::NoData) => {
                     eprintln!("no run history found at .tod/logs/");

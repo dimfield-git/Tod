@@ -80,8 +80,8 @@ Outcome: compile and CLI flag behavior verified.
 
 ```bash
 cd /home/dim/Agents/tod-test-target
-/home/dim/Agents/Tod/target/debug/agent status
-/home/dim/Agents/Tod/target/debug/agent stats
+/home/dim/Agents/Tod/target/debug/tod status
+/home/dim/Agents/Tod/target/debug/tod stats
 ```
 
 Outcome: both commands report successfully; stats includes the live run (`Last 2 runs: Succeeded: 2`).

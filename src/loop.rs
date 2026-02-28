@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -227,7 +228,7 @@ impl RunState {
     fn checkpoint(&self, config: &RunConfig) {
         let tod_dir = config.project_root.join(".tod");
         if fs::create_dir_all(&tod_dir).is_err() {
-            eprintln!("warning: could not create .tod directory");
+            crate::warn!("could not create .tod directory");
             return;
         }
         match serde_json::to_string_pretty(self) {
@@ -235,14 +236,14 @@ impl RunState {
                 let tmp_path = tod_dir.join("state.json.tmp");
                 let final_path = tod_dir.join("state.json");
                 if let Err(e) = fs::write(&tmp_path, json) {
-                    eprintln!("warning: failed to write checkpoint: {e}");
+                    crate::warn!("failed to write checkpoint: {e}");
                     return;
                 }
                 if let Err(e) = fs::rename(&tmp_path, &final_path) {
-                    eprintln!("warning: failed to finalize checkpoint: {e}");
+                    crate::warn!("failed to finalize checkpoint: {e}");
                 }
             }
-            Err(e) => eprintln!("warning: failed to serialize checkpoint: {e}"),
+            Err(e) => crate::warn!("failed to serialize checkpoint: {e}"),
         }
     }
 
@@ -343,12 +344,13 @@ pub enum LoopError {
         source: ApplyError,
     },
     Io {
-        path: String,
-        cause: String,
+        path: PathBuf,
+        kind: io::ErrorKind,
+        message: String,
     },
     InvalidPlanPath {
         step_index: usize,
-        path: String,
+        path: PathBuf,
         reason: String,
     },
     Aborted {
@@ -393,15 +395,22 @@ impl std::fmt::Display for LoopError {
                 step_index + 1,
                 iteration
             ),
-            Self::Io { path, cause } => write!(f, "I/O error for {path}: {cause}"),
+            Self::Io {
+                path,
+                kind: _kind,
+                message,
+            } => {
+                write!(f, "I/O error for {}: {message}", path.display())
+            }
             Self::InvalidPlanPath {
                 step_index,
                 path,
                 reason,
             } => write!(
                 f,
-                "invalid plan path at step {} ({path}): {reason}",
-                step_index + 1
+                "invalid plan path at step {} ({}): {reason}",
+                step_index + 1,
+                path.display()
             ),
             Self::Aborted { step_index, reason } => {
                 write!(f, "run aborted at step {}: {reason}", step_index + 1)
@@ -438,7 +447,15 @@ impl From<PlanError> for LoopError {
 impl From<ContextError> for LoopError {
     fn from(value: ContextError) -> Self {
         match value {
-            ContextError::Io { path, cause } => Self::Io { path, cause },
+            ContextError::Io {
+                path,
+                kind,
+                message,
+            } => Self::Io {
+                path,
+                kind,
+                message,
+            },
             ContextError::InvalidPath {
                 step_index,
                 path,
@@ -631,8 +648,9 @@ pub fn resume(
     let state_path = config.project_root.join(".tod/state.json");
     let json = fs::read_to_string(&state_path).map_err(|_| LoopError::NoCheckpoint)?;
     let mut state: RunState = serde_json::from_str(&json).map_err(|e| LoopError::Io {
-        path: state_path.display().to_string(),
-        cause: format!("failed to parse state.json: {e}"),
+        path: state_path.clone(),
+        kind: io::ErrorKind::InvalidData,
+        message: format!("failed to parse state.json: {e}"),
     })?;
 
     // Fingerprint check
@@ -717,6 +735,34 @@ mod tests {
         // Dry run must not modify disk.
         let content = fs::read_to_string(sandbox.join("src/main.rs")).unwrap();
         assert_eq!(content, "fn main() {}\n");
+    }
+
+    #[test]
+    fn loop_error_io_display() {
+        let err = LoopError::Io {
+            path: PathBuf::from(".tod/state.json"),
+            kind: io::ErrorKind::NotFound,
+            message: "missing".to_string(),
+        };
+        assert_eq!(err.to_string(), "I/O error for .tod/state.json: missing");
+    }
+
+    #[test]
+    fn context_error_converts_to_loop_error() {
+        let context_error = ContextError::Io {
+            path: PathBuf::from("src/lib.rs"),
+            kind: io::ErrorKind::PermissionDenied,
+            message: "permission denied".to_string(),
+        };
+
+        let loop_error: LoopError = context_error.into();
+        assert!(matches!(
+            loop_error,
+            LoopError::Io { path, kind, message }
+                if path == PathBuf::from("src/lib.rs")
+                    && kind == io::ErrorKind::PermissionDenied
+                    && message == "permission denied"
+        ));
     }
 
     #[test]

@@ -19,8 +19,8 @@ cargo run -- run --project ./myproject "Add a CLI flag --name and print hello, <
 - `init <name>`: scaffold a new Rust project via `cargo init` and add `.tod/` to `.gitignore`.
 - `run [FLAGS] --project <path> "<goal>"`: run a new agent session for a goal.
 - `resume --project <path> [--force]`: continue from `.tod/state.json`.
-- `status`: show summary for the latest run in the current project.
-- `stats [--last N]`: summarize recent run history from `.tod/logs/`.
+- `status [--project <path>]`: show summary for the latest run.
+- `stats [--project <path>] [--last N]`: summarize recent run history from `.tod/logs/`.
 
 ## Configuration
 
@@ -51,13 +51,13 @@ src/
   llm.rs        provider trait + Anthropic implementation
   cli.rs        clap CLI definitions and argument conversion
   config.rs     run configuration types
+  util.rs       shared helpers (`safe_preview`, `warn!`)
   stats.rs      read-only run history analysis
   test_util.rs  shared test sandbox helpers
 ```
 
 ## Status
 
-Prototype: Phases 1-9 complete.
+Prototype: Phases 1-10 complete.
 
 <img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/1186b466-ce17-4bf3-af6f-157662fae955" />
-

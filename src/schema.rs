@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::util::safe_preview;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -407,18 +409,6 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
         current = p.parent();
     }
     None
-}
-
-/// Truncate a string for error messages without panicking on UTF-8 boundaries.
-fn safe_preview(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 // ---------------------------------------------------------------------------

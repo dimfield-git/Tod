@@ -4,6 +4,8 @@ use std::env;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::util::safe_preview;
+
 const MAX_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 
@@ -155,8 +157,8 @@ impl LlmProvider for AnthropicProvider {
             {
                 Ok(resp) => resp,
                 Err(e) if attempt < MAX_RETRIES => {
-                    eprintln!(
-                        "warning: LLM request failed (attempt {}), retrying: {e}",
+                    crate::warn!(
+                        "LLM request failed (attempt {}), retrying: {e}",
                         attempt + 1
                     );
                     sleep_with_jitter(attempt);
@@ -169,8 +171,8 @@ impl LlmProvider for AnthropicProvider {
             let body_str = match response.into_body().read_to_string() {
                 Ok(s) => s,
                 Err(e) if attempt < MAX_RETRIES => {
-                    eprintln!(
-                        "warning: LLM response read failed (attempt {}), retrying: {e}",
+                    crate::warn!(
+                        "LLM response read failed (attempt {}), retrying: {e}",
                         attempt + 1
                     );
                     sleep_with_jitter(attempt);
@@ -181,8 +183,8 @@ impl LlmProvider for AnthropicProvider {
 
             if status >= 400 {
                 if is_retryable_status(status) && attempt < MAX_RETRIES {
-                    eprintln!(
-                        "warning: LLM API error {status} (attempt {}), retrying: {}",
+                    crate::warn!(
+                        "LLM API error {status} (attempt {}), retrying: {}",
                         attempt + 1,
                         safe_preview(&body_str, 200)
                     );
@@ -223,18 +225,6 @@ impl LlmProvider for AnthropicProvider {
             "retry loop exhausted without response".to_string(),
         ))
     }
-}
-
-/// Truncate a string for error messages without panicking on UTF-8 boundaries.
-fn safe_preview(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 // ---------------------------------------------------------------------------
