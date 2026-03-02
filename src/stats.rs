@@ -32,12 +32,14 @@ pub struct RunSummary {
     pub steps_completed: usize,
     pub steps_aborted: usize,
     pub total_attempts: usize,
-    pub retries_per_step: Vec<usize>,
+    pub attempts_per_step: Vec<usize>,
     pub failure_stages: Vec<(String, usize)>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
-    pub llm_requests: u64,
+    pub llm_requests_total: u64,
+    pub llm_requests_plan: u64,
+    pub llm_requests_edit: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,13 +167,13 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         attempt_logs.push(read_json::<AttemptLog>(&path)?);
     }
 
-    let mut attempts_per_step: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut attempts_by_step: BTreeMap<usize, usize> = BTreeMap::new();
     let mut last_decision_per_step: BTreeMap<usize, (usize, String)> = BTreeMap::new();
     let mut completed_steps: HashSet<usize> = HashSet::new();
     let mut failure_counts: HashMap<String, usize> = HashMap::new();
 
     for log in &attempt_logs {
-        *attempts_per_step.entry(log.step_index).or_insert(0) += 1;
+        *attempts_by_step.entry(log.step_index).or_insert(0) += 1;
 
         if log.review_decision == "proceed" {
             completed_steps.insert(log.step_index);
@@ -200,16 +202,16 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     let total_attempts = attempt_logs.len();
 
     let plan_steps = plan_log.plan.steps.len();
-    let max_step_seen = attempts_per_step.keys().copied().max().unwrap_or(0);
-    let retries_len = if attempts_per_step.is_empty() {
+    let max_step_seen = attempts_by_step.keys().copied().max().unwrap_or(0);
+    let attempts_len = if attempts_by_step.is_empty() {
         plan_steps
     } else {
         plan_steps.max(max_step_seen + 1)
     };
 
-    let mut retries_per_step = vec![0usize; retries_len];
-    for (step_index, count) in attempts_per_step {
-        retries_per_step[step_index] = count;
+    let mut attempts_per_step = vec![0usize; attempts_len];
+    for (step_index, count) in attempts_by_step {
+        attempts_per_step[step_index] = count;
     }
 
     let mut failure_stages: Vec<(String, usize)> = failure_counts.into_iter().collect();
@@ -230,10 +232,12 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     let input_tokens = usage_cumulative.input_tokens;
     let output_tokens = usage_cumulative.output_tokens;
     let total_tokens = usage_cumulative.total();
-    let llm_requests = attempt_logs
+    let llm_requests_plan: u64 = if plan_log.usage.is_some() { 1 } else { 0 };
+    let llm_requests_edit = attempt_logs
         .iter()
         .filter(|log| log.usage_this_call.is_some())
         .count() as u64;
+    let llm_requests_total = llm_requests_plan + llm_requests_edit;
 
     Ok(RunSummary {
         run_id: plan_log.run_id,
@@ -242,12 +246,14 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         steps_completed,
         steps_aborted,
         total_attempts,
-        retries_per_step,
+        attempts_per_step,
         failure_stages,
         input_tokens,
         output_tokens,
         total_tokens,
-        llm_requests,
+        llm_requests_total,
+        llm_requests_plan,
+        llm_requests_edit,
     })
 }
 
@@ -354,7 +360,7 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
 
 pub fn format_run_summary(summary: &RunSummary) -> String {
     let attempts = summary
-        .retries_per_step
+        .attempts_per_step
         .iter()
         .enumerate()
         .map(|(step, count)| format!("step {step}: {count}"))
@@ -373,9 +379,19 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
     };
 
     let tokens_line = if summary.total_tokens > 0 {
+        let legacy_suffix = if summary.llm_requests_plan == 0 {
+            " (planner usage unknown — legacy logs)"
+        } else {
+            ""
+        };
         format!(
-            "\nTokens:     {} in / {} out ({} requests)",
-            summary.input_tokens, summary.output_tokens, summary.llm_requests
+            "\nTokens:     {} in / {} out ({} requests: {} plan, {} edit){}",
+            summary.input_tokens,
+            summary.output_tokens,
+            summary.llm_requests_total,
+            summary.llm_requests_plan,
+            summary.llm_requests_edit,
+            legacy_suffix,
         )
     } else {
         String::new()
@@ -387,7 +403,7 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
         summary.goal,
         summary.outcome,
         summary.steps_completed,
-        summary.retries_per_step.len(),
+        summary.attempts_per_step.len(),
         summary.steps_aborted,
         summary.total_attempts,
         attempts,
@@ -433,16 +449,32 @@ mod tests {
     use crate::r#loop::{Fingerprint, StepState};
 
     fn write_plan(run_dir: &Path, run_id: &str, goal: &str, steps: usize) {
+        write_plan_with_usage(run_dir, run_id, goal, steps, None);
+    }
+
+    fn write_plan_with_usage(
+        run_dir: &Path,
+        run_id: &str,
+        goal: &str,
+        steps: usize,
+        usage: Option<Usage>,
+    ) {
         let plan_steps = (0..steps)
             .map(|i| json!({"description": format!("step {i}"), "files": ["src/main.rs"]}))
             .collect::<Vec<_>>();
-        let value = json!({
+        let mut value = json!({
             "run_id": run_id,
             "goal": goal,
             "timestamp_utc": "2026-02-24T14:30:22Z",
             "run_mode": "default",
             "plan": {"steps": plan_steps}
         });
+        if let Some(usage) = usage {
+            value["usage"] = json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens
+            });
+        }
         fs::create_dir_all(run_dir).unwrap();
         fs::write(
             run_dir.join("plan.json"),
@@ -460,7 +492,31 @@ mod tests {
         ok: bool,
         review_decision: &str,
     ) {
-        let value = json!({
+        write_attempt_with_usage(
+            run_dir,
+            run_id,
+            step_index,
+            attempt,
+            stage,
+            ok,
+            review_decision,
+            None,
+            None,
+        );
+    }
+
+    fn write_attempt_with_usage(
+        run_dir: &Path,
+        run_id: &str,
+        step_index: usize,
+        attempt: usize,
+        stage: &str,
+        ok: bool,
+        review_decision: &str,
+        usage_this_call: Option<Usage>,
+        usage_cumulative: Option<Usage>,
+    ) {
+        let mut value = json!({
             "run_id": run_id,
             "step_index": step_index,
             "attempt": attempt,
@@ -470,6 +526,18 @@ mod tests {
             "runner_output": {"stage": stage, "ok": ok, "output": "", "truncated": false},
             "review_decision": review_decision
         });
+        if let Some(usage) = usage_this_call {
+            value["usage_this_call"] = json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens
+            });
+        }
+        if let Some(usage) = usage_cumulative {
+            value["usage_cumulative"] = json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens
+            });
+        }
         let path = run_dir.join(format!("step_{step_index}_attempt_{attempt}.json"));
         fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
     }
@@ -563,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn summarize_run_retries_per_step() {
+    fn summarize_run_attempts_per_step() {
         let sandbox = TempSandbox::new();
         let run_id = "20260224_143022";
         let run_dir = sandbox.join(".tod/logs").join(run_id);
@@ -575,7 +643,78 @@ mod tests {
         write_attempt(&run_dir, run_id, 1, 1, "test", true, "proceed");
 
         let summary = summarize_run(&run_dir).unwrap();
-        assert_eq!(summary.retries_per_step, vec![3, 1]);
+        assert_eq!(summary.attempts_per_step, vec![3, 1]);
+    }
+
+    #[test]
+    fn summarize_run_counts_plan_request() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260224_150000";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+
+        write_plan_with_usage(
+            &run_dir,
+            run_id,
+            "goal",
+            1,
+            Some(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+            }),
+        );
+        write_attempt_with_usage(
+            &run_dir,
+            run_id,
+            0,
+            1,
+            "test",
+            true,
+            "proceed",
+            Some(Usage {
+                input_tokens: 3,
+                output_tokens: 2,
+            }),
+            Some(Usage {
+                input_tokens: 13,
+                output_tokens: 7,
+            }),
+        );
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.llm_requests_plan, 1);
+        assert_eq!(summary.llm_requests_edit, 1);
+        assert_eq!(summary.llm_requests_total, 2);
+    }
+
+    #[test]
+    fn summarize_run_legacy_plan_no_usage() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260224_150500";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+
+        write_plan(&run_dir, run_id, "goal", 1);
+        write_attempt_with_usage(
+            &run_dir,
+            run_id,
+            0,
+            1,
+            "test",
+            true,
+            "proceed",
+            Some(Usage {
+                input_tokens: 3,
+                output_tokens: 2,
+            }),
+            Some(Usage {
+                input_tokens: 3,
+                output_tokens: 2,
+            }),
+        );
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.llm_requests_plan, 0);
+        assert_eq!(summary.llm_requests_edit, 1);
+        assert_eq!(summary.llm_requests_total, 1);
     }
 
     #[test]
@@ -704,15 +843,18 @@ mod tests {
             steps_completed: 1,
             steps_aborted: 0,
             total_attempts: 1,
-            retries_per_step: vec![1],
+            attempts_per_step: vec![1],
             failure_stages: vec![],
             input_tokens: 1234,
             output_tokens: 567,
             total_tokens: 1801,
-            llm_requests: 3,
+            llm_requests_total: 3,
+            llm_requests_plan: 1,
+            llm_requests_edit: 2,
         };
         let rendered = format_run_summary(&summary);
         assert!(rendered.contains("Tokens:"));
+        assert!(rendered.contains("3 requests: 1 plan, 2 edit"));
     }
 
     #[test]
@@ -724,14 +866,38 @@ mod tests {
             steps_completed: 1,
             steps_aborted: 0,
             total_attempts: 1,
-            retries_per_step: vec![1],
+            attempts_per_step: vec![1],
             failure_stages: vec![],
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
-            llm_requests: 0,
+            llm_requests_total: 0,
+            llm_requests_plan: 0,
+            llm_requests_edit: 0,
         };
         let rendered = format_run_summary(&summary);
         assert!(!rendered.contains("Tokens:"));
+    }
+
+    #[test]
+    fn format_run_summary_legacy_plan_annotation() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "g".to_string(),
+            outcome: RunOutcome::Success,
+            steps_completed: 1,
+            steps_aborted: 0,
+            total_attempts: 1,
+            attempts_per_step: vec![1],
+            failure_stages: vec![],
+            input_tokens: 700,
+            output_tokens: 300,
+            total_tokens: 1000,
+            llm_requests_total: 1,
+            llm_requests_plan: 0,
+            llm_requests_edit: 1,
+        };
+        let rendered = format_run_summary(&summary);
+        assert!(rendered.contains("legacy"));
     }
 }

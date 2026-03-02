@@ -144,6 +144,8 @@ pub(crate) struct PlanLog {
     pub timestamp_utc: String,
     pub run_mode: String,
     pub plan: Plan,
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 /// Run-level state. Owns the plan and tracks progress across all steps.
@@ -248,7 +250,7 @@ impl RunState {
     }
 
     /// Write plan.json to the run's log directory. Best-effort.
-    fn write_plan_log(&self, config: &RunConfig) {
+    fn write_plan_log(&self, config: &RunConfig, usage: Option<Usage>) {
         let dir = config.project_root.join(&self.log_dir);
         if fs::create_dir_all(&dir).is_err() {
             return;
@@ -259,6 +261,7 @@ impl RunState {
             timestamp_utc: chrono::Utc::now().to_rfc3339(),
             run_mode: format!("{:?}", config.mode).to_lowercase(),
             plan: self.plan.clone(),
+            usage,
         };
         if let Ok(json) = serde_json::to_string_pretty(&log) {
             let _ = fs::write(dir.join("plan.json"), json);
@@ -501,7 +504,7 @@ pub fn run(
     }
 
     // Write plan log and checkpoint: plan created, about to start step 0.
-    state.write_plan_log(config);
+    state.write_plan_log(config, plan_usage.clone());
     state.checkpoint(config);
 
     run_from_state(provider, config, &mut state)
@@ -662,6 +665,13 @@ pub fn resume(
         });
     }
     state.fingerprint = current;
+
+    if state.max_tokens > 0 && state.usage.total() >= state.max_tokens {
+        return Err(LoopError::TokenCapExceeded {
+            used: state.usage.total(),
+            cap: state.max_tokens,
+        });
+    }
 
     // Continue the step loop from where we left off
     run_from_state(provider, config, &mut state)
@@ -1089,7 +1099,7 @@ mod tests {
             }],
         };
         let state = RunState::new("write tests".into(), plan, &config);
-        state.write_plan_log(&config);
+        state.write_plan_log(&config, None);
 
         let plan_path = sandbox.join(&state.log_dir).join("plan.json");
         assert!(
@@ -1102,6 +1112,68 @@ mod tests {
         assert_eq!(parsed["goal"], "write tests");
         assert_eq!(parsed["run_id"], state.run_id);
         assert!(parsed["plan"]["steps"].is_array());
+    }
+
+    #[test]
+    fn plan_log_includes_usage() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = UsageProvider::from(vec![
+            (
+                r#"{"steps":[{"description":"s","files":["src/main.rs"]}]}"#.to_string(),
+                Some(Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                }),
+            ),
+            (
+                r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() {}"}]}"#.to_string(),
+                None,
+            ),
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let _ = run(&provider, "goal", &config).unwrap();
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+
+        let plan_json = fs::read_to_string(entries[0].join("plan.json")).unwrap();
+        let parsed: PlanLog = serde_json::from_str(&plan_json).unwrap();
+        assert_eq!(
+            parsed.usage,
+            Some(Usage {
+                input_tokens: 11,
+                output_tokens: 7
+            })
+        );
+    }
+
+    #[test]
+    fn plan_log_without_usage_deserializes() {
+        let legacy_json = r#"{
+            "run_id":"20260301_000000",
+            "goal":"legacy goal",
+            "timestamp_utc":"2026-03-01T00:00:00Z",
+            "run_mode":"default",
+            "plan":{"steps":[{"description":"s0","files":["src/main.rs"]}]}
+        }"#;
+
+        let parsed: PlanLog = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.usage.is_none());
     }
 
     // -- Attempt log ------------------------------------------------------
@@ -1307,5 +1379,35 @@ mod tests {
         let provider = QueueProvider::from(vec![]);
         let err = resume(&provider, &config, false).unwrap_err();
         assert!(matches!(err, LoopError::FingerprintMismatch { .. }));
+    }
+
+    #[test]
+    fn resume_at_token_cap_returns_error() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            max_tokens: 100,
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+
+        let mut state = RunState::new("goal".into(), plan, &config);
+        state.usage = Usage {
+            input_tokens: 60,
+            output_tokens: 40,
+        };
+        state.checkpoint(&config);
+
+        let provider = QueueProvider::from(vec![]);
+        let err = resume(&provider, &config, false).unwrap_err();
+        assert!(matches!(
+            err,
+            LoopError::TokenCapExceeded { used: 100, cap: 100 }
+        ));
     }
 }

@@ -19,9 +19,9 @@
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 154 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 160 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–10 complete, Phase 11 next.
+Linux-only. No GUI dependencies. Phases 1–11 complete.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -39,7 +39,7 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
 | 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
 | 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | ✅ Done |
-| 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | 🔜 Next |
+| 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
 
 **Current instructions: see [`PHASE11.md`](PHASE11.md)**
 
@@ -93,7 +93,7 @@ docs/
 <project_root>/.tod/
   state.json                          RunState checkpoint (overwritten atomically each time)
   logs/<run_id>/
-    plan.json                         Written once after planning
+    plan.json                         Written once after planning (includes usage data from Phase 11+)
     step_N_attempt_M.json             One per edit→apply→run→review cycle
 ```
 
@@ -114,3 +114,4 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Context building lives in `context.rs` with explicit byte budgets. Planner context (128 KiB), step context (64 KiB), retry context (8 KiB). All truncation is UTF-8 safe.
 - LLM retry (429, 500, 502, 503, network errors) is handled inside `AnthropicProvider::complete()` with exponential backoff + jitter. The orchestration loop never sees transient transport failures.
 - Resume must not issue LLM calls when checkpoint usage already meets or exceeds the token cap.
+- Stats request counts reflect all billed API calls (planner + editor). Planner usage is recorded in `plan.json`. Legacy logs without planner usage are handled gracefully.
