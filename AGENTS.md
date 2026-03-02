@@ -12,7 +12,7 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current instructions (see [`ROADMAP.md`](ROADMAP.md)) → Future phases.
+- **Priority order:** Current instructions (see [`PHASE11.md`](PHASE11.md)) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
@@ -21,7 +21,7 @@ Tod is a minimal Rust coding agent that operates from the terminal. It plans wor
 
 **"Done" means:** `cargo test` passes (baseline: 154 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–10 complete.
+Linux-only. No GUI dependencies. Phases 1–10 complete, Phase 11 next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -39,8 +39,9 @@ Core design principle: **"LLM generates, everything else constrains."**
 | 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
 | 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
 | 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | ✅ Done |
+| 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | 🔜 Next |
 
-**Current instructions: see [`ROADMAP.md`](ROADMAP.md)**
+**Current instructions: see [`PHASE11.md`](PHASE11.md)**
 
 ## Golden Path Commands
 
@@ -112,3 +113,4 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json` atomically (tmp + rename); resume loads from it. Fingerprint detects workspace drift between runs.
 - Context building lives in `context.rs` with explicit byte budgets. Planner context (128 KiB), step context (64 KiB), retry context (8 KiB). All truncation is UTF-8 safe.
 - LLM retry (429, 500, 502, 503, network errors) is handled inside `AnthropicProvider::complete()` with exponential backoff + jitter. The orchestration loop never sees transient transport failures.
+- Resume must not issue LLM calls when checkpoint usage already meets or exceeds the token cap.
