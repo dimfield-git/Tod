@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
+use serde_json::json;
 
 use crate::log_schema::{AttemptLog, FinalLog, PlanLog};
 use crate::r#loop::RunState;
@@ -481,6 +482,27 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
     ) + &tokens_line
 }
 
+pub fn format_run_summary_json(summary: &RunSummary) -> String {
+    json!({
+        "run_id": &summary.run_id,
+        "goal": &summary.goal,
+        "outcome": summary.outcome.to_string(),
+        "terminal_message": &summary.terminal_message,
+        "steps_completed": summary.steps_completed,
+        "steps_aborted": summary.steps_aborted,
+        "total_attempts": summary.total_attempts,
+        "attempts_per_step": &summary.attempts_per_step,
+        "failure_stages": &summary.failure_stages,
+        "input_tokens": summary.input_tokens,
+        "output_tokens": summary.output_tokens,
+        "total_tokens": summary.total_tokens,
+        "llm_requests_total": summary.llm_requests_total,
+        "llm_requests_plan": summary.llm_requests_plan,
+        "llm_requests_edit": summary.llm_requests_edit
+    })
+    .to_string()
+}
+
 pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
     let failure = match &summary.most_common_failure_stage {
         Some((stage, count)) => format!("{stage} ({count} occurrences)"),
@@ -510,6 +532,23 @@ pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
         summary.avg_tokens,
         failure,
     )
+}
+
+pub fn format_multi_run_summary_json(summary: &MultiRunSummary) -> String {
+    json!({
+        "runs_total": summary.runs_total,
+        "runs_succeeded": summary.runs_succeeded,
+        "runs_aborted": summary.runs_aborted,
+        "runs_cap_reached": summary.runs_cap_reached,
+        "runs_token_cap": summary.runs_token_cap,
+        "runs_edit_error": summary.runs_edit_error,
+        "runs_apply_error": summary.runs_apply_error,
+        "runs_plan_error": summary.runs_plan_error,
+        "avg_attempts": summary.avg_attempts,
+        "avg_tokens": summary.avg_tokens,
+        "most_common_failure_stage": &summary.most_common_failure_stage
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -1176,5 +1215,55 @@ mod tests {
         };
         let rendered = format_run_summary(&summary);
         assert!(!rendered.contains("legacy"));
+    }
+
+    #[test]
+    fn format_run_summary_json_round_trips() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "goal".to_string(),
+            outcome: RunOutcome::CapReached,
+            terminal_message: Some("hit cap".to_string()),
+            steps_completed: 1,
+            steps_aborted: 0,
+            total_attempts: 3,
+            attempts_per_step: vec![3],
+            failure_stages: vec![("test".to_string(), 2)],
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            llm_requests_total: 4,
+            llm_requests_plan: 1,
+            llm_requests_edit: 3,
+        };
+
+        let rendered = format_run_summary_json(&summary);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["run_id"], "r1");
+        assert_eq!(parsed["outcome"], "cap_reached");
+        assert_eq!(parsed["total_tokens"], 15);
+    }
+
+    #[test]
+    fn format_multi_run_summary_json_has_expected_keys() {
+        let summary = MultiRunSummary {
+            runs_total: 5,
+            runs_succeeded: 2,
+            runs_aborted: 1,
+            runs_cap_reached: 1,
+            runs_token_cap: 0,
+            runs_edit_error: 1,
+            runs_apply_error: 0,
+            runs_plan_error: 0,
+            avg_attempts: 2.4,
+            avg_tokens: 1200.0,
+            most_common_failure_stage: Some(("test".to_string(), 3)),
+        };
+
+        let rendered = format_multi_run_summary_json(&summary);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed["runs_total"], 5);
+        assert_eq!(parsed["runs_edit_error"], 1);
+        assert!(parsed.get("most_common_failure_stage").is_some());
     }
 }

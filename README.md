@@ -6,8 +6,8 @@ Core design principle: LLM generates intent; deterministic Rust code constrains 
 
 ## Current Status
 
-- Phases 1-15 complete
-- Baseline validation: `cargo test` (`193 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
+- Phases 1-16 complete
+- Baseline validation: `cargo test` (`203 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
 
 ## Requirements
 
@@ -29,7 +29,9 @@ cargo run -- run --project ./myproject "Add a CLI flag --name and print hello, <
 
 # inspect latest run
 cargo run -- status --project ./myproject
+cargo run -- status --project ./myproject --json
 cargo run -- stats --project ./myproject --last 5
+cargo run -- stats --project ./myproject --last 5 --json
 ```
 
 ## Commands
@@ -37,8 +39,12 @@ cargo run -- stats --project ./myproject --last 5
 - `init <name>`
 - `run [--project <path>] [--strict] [--max-iters <N>] [--dry-run] [--max-tokens <N>] <goal>`
 - `resume [--project <path>] [--force]`
-- `status [--project <path>]`
-- `stats [--project <path>] [--last <N>]`
+- `status [--project <path>] [--json]`
+- `stats [--project <path>] [--last <N>] [--json]`
+
+Operator guidance:
+
+- See `docs/runbook.md` for mode selection, cap tuning, resume/force usage, and failure recovery actions.
 
 ### Run flags
 

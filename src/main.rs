@@ -88,8 +88,14 @@ fn main() {
                 }
             }
         }
-        Command::Status { project } => match stats::summarize_current(&project) {
-            Ok(summary) => println!("{}", stats::format_run_summary(&summary)),
+        Command::Status { project, json } => match stats::summarize_current(&project) {
+            Ok(summary) => {
+                if json {
+                    println!("{}", stats::format_run_summary_json(&summary));
+                } else {
+                    println!("{}", stats::format_run_summary(&summary));
+                }
+            }
             Err(stats::StatsError::NoData) => {
                 eprintln!("no run data found (.tod/state.json missing or logs unavailable)");
                 std::process::exit(1);
@@ -99,10 +105,20 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Stats { project, last } => {
+        Command::Stats {
+            project,
+            last,
+            json,
+        } => {
             let tod_dir = project.join(".tod");
             match stats::summarize_runs(&tod_dir, last) {
-                Ok(summary) => println!("{}", stats::format_multi_run_summary(&summary)),
+                Ok(summary) => {
+                    if json {
+                        println!("{}", stats::format_multi_run_summary_json(&summary));
+                    } else {
+                        println!("{}", stats::format_multi_run_summary(&summary));
+                    }
+                }
                 Err(stats::StatsError::NoData) => {
                     eprintln!("no run history found at .tod/logs/");
                     std::process::exit(1);

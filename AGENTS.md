@@ -14,7 +14,7 @@
 ## Definition of Done
 
 A change is complete only when:
-- `cargo test` passes (baseline: **193 passed, 1 ignored**)
+- `cargo test` passes (baseline: **203 passed, 1 ignored**)
 - `cargo clippy -- -D warnings` is clean
 - behavior and docs are aligned for any changed runtime surface
 
@@ -33,8 +33,8 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1–15 complete
-- Phase 16 in progress
+- Phases 1–16 complete
+- Phase 17 next
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -147,7 +147,7 @@ Request counting semantics:
 | 13 | Resume determinism + fingerprint v2 + run-id hardening | Done |
 | 14 | Observability/schema cohesion and metrics fidelity | Done |
 | 15 | Loop surface reduction + compatibility hardening | Done |
-| 16 | Operator usability + workflow safety | In progress |
+| 16 | Operator usability + workflow safety | Done |
 
 ## Phase 15 Outcomes
 
@@ -165,21 +165,28 @@ Design decisions locked for Phase 15:
 
 Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this maintainability and compatibility work is complete.
 
-## Phase 16 Scope (Locked)
+## Phase 16 Outcomes
 
-Primary objective:
-- Improve operator usability and real-workflow safety so Tod is practical for daily Rust maintenance tasks.
-- Keep core safety and compatibility invariants intact.
-- Continue reducing orchestration maintenance risk through small, behavior-preserving extractions.
+Completed outcomes:
+- Added operator runbook at `docs/runbook.md` with mode matrix, cap tuning, resume/force guidance, and failure recovery decisions.
+- Added non-blocking dirty-workspace warning in `run()` for mutable runs (`git -C <project_root> status --porcelain`), with silent fallback when git is unavailable or repo checks fail.
+- Extracted pure cap guards in `loop.rs`: `check_iteration_cap(&RunState)` and `check_token_cap(&RunState)`; kept checkpoint/final-log behavior inline and unchanged.
+- Added machine-readable single-line JSON output for `tod status --json` and `tod stats --json` via `serde_json::json!`.
+- Expanded regression coverage for dirty-workspace detection, cap helper behavior, CLI parsing for `--json`, and stats JSON formatters.
 
-Locked deliverables:
-1. **Operator runbook** (`docs/runbook.md`): mode decision matrix, cap tuning guidance, resume/force guidance, failure recovery decision tree. Documentation only — no code changes.
-2. **Dirty-workspace warning**: informational stderr warning in `run()` when target project has uncommitted git changes. Non-blocking, silent when git unavailable, skipped for resume and dry-run.
-3. **Cap-check extraction**: extract `check_iteration_cap` and `check_token_cap` as pure `&RunState -> Option<LoopError>` helpers. Behavior-preserving refactor of `run_from_state` and `run`.
-4. **JSON stats output**: `--json` flag on `tod stats` and `tod status` for machine-readable output via `serde_json::json!`. Default human-readable output unchanged.
+Phase 16 locked decisions retained:
+- No changes to path safety, transactional apply semantics, or log compatibility defaults.
+- `log_schema.rs` remains pure data + serde.
+- No major feature-surface expansion (no patch mode, provider expansion, or git worktree orchestration engine).
 
-Design decisions locked for Phase 16:
-- The dirty-workspace check uses `git -C <project_root> status --porcelain` via `std::process::Command`. No new dependencies.
-- Cap-check helpers are pure functions with no side effects. Surrounding checkpoint/log/return patterns stay inline.
-- JSON output is compact single-line format. No changes to `RunSummary` or `MultiRunSummary` struct definitions.
-- No major new features this phase (no patch mode, no provider expansion, no git worktree engine).
+## Phase 17 Priority Handoff
+
+Priority areas for next phase:
+1. Improve stats observability depth while preserving legacy artifact compatibility.
+2. Continue reducing orchestration complexity in `loop.rs` through small pure-helper extractions.
+3. Add narrowly scoped operator UX improvements that do not expand execution risk or dependency surface.
+
+Guardrails for handoff:
+- Preserve best-effort persistence behavior in `loop_io.rs`.
+- Preserve resume compatibility for legacy checkpoints and artifacts.
+- Keep deterministic, table-testable decision logic where possible.

@@ -70,6 +70,10 @@ pub enum Command {
         /// Path to the target project root.
         #[arg(short, long, default_value = ".")]
         project: PathBuf,
+
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Analyze run history.
@@ -81,6 +85,10 @@ pub enum Command {
         /// Number of recent runs to summarize.
         #[arg(long, default_value = "5")]
         last: usize,
+
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -211,13 +219,19 @@ mod tests {
         let cli = parse(&["tod", "status"]);
         assert!(matches!(
             cli.command,
-            Command::Status { project } if project == PathBuf::from(".")
+            Command::Status { project, json } if project == PathBuf::from(".") && !json
         ));
 
         let cli = parse(&["tod", "status", "--project", "myproj"]);
         assert!(matches!(
             cli.command,
-            Command::Status { project } if project == PathBuf::from("myproj")
+            Command::Status { project, json } if project == PathBuf::from("myproj") && !json
+        ));
+
+        let cli = parse(&["tod", "status", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Command::Status { project, json } if project == PathBuf::from(".") && json
         ));
     }
 
@@ -226,7 +240,7 @@ mod tests {
         let cli = parse(&["tod", "stats"]);
         assert!(matches!(
             cli.command,
-            Command::Stats { project, last } if project == PathBuf::from(".") && last == 5
+            Command::Stats { project, last, json } if project == PathBuf::from(".") && last == 5 && !json
         ));
     }
 
@@ -235,13 +249,19 @@ mod tests {
         let cli = parse(&["tod", "stats", "--last", "9"]);
         assert!(matches!(
             cli.command,
-            Command::Stats { project, last } if project == PathBuf::from(".") && last == 9
+            Command::Stats { project, last, json } if project == PathBuf::from(".") && last == 9 && !json
         ));
 
         let cli = parse(&["tod", "stats", "--project", "myproj", "--last", "9"]);
         assert!(matches!(
             cli.command,
-            Command::Stats { project, last } if project == PathBuf::from("myproj") && last == 9
+            Command::Stats { project, last, json } if project == PathBuf::from("myproj") && last == 9 && !json
+        ));
+
+        let cli = parse(&["tod", "stats", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Command::Stats { project, last, json } if project == PathBuf::from(".") && last == 5 && json
         ));
     }
 

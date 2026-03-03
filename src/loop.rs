@@ -533,6 +533,30 @@ impl From<ContextError> for LoopError {
 // Orchestration
 // ---------------------------------------------------------------------------
 
+/// Check if project root is inside a git repo with uncommitted changes.
+/// Returns a warning string if dirty, None if clean or not a git repo.
+fn check_workspace_dirty(project_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    if output.stdout.is_empty() {
+        None
+    } else {
+        Some(
+            "warning: workspace has uncommitted changes — consider committing or stashing before running Tod"
+                .to_string(),
+        )
+    }
+}
+
 /// Run the full agent loop: plan → (edit → apply → run → review) × N.
 ///
 /// Public API is unchanged — callers pass a provider, goal, and config,
@@ -544,6 +568,12 @@ pub fn run(
     goal: &str,
     config: &RunConfig,
 ) -> Result<LoopReport, LoopError> {
+    if !config.dry_run {
+        if let Some(warning) = check_workspace_dirty(&config.project_root) {
+            eprintln!("{warning}");
+        }
+    }
+
     let project_context = context::build_planner_context(&config.project_root)?;
     let (plan, plan_usage) = match create_plan(provider, goal, &project_context) {
         Ok(result) => result,
@@ -567,12 +597,8 @@ pub fn run(
         state.usage.accumulate(usage);
         state.llm_requests += 1;
     }
-    if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
+    if let Some(err) = check_token_cap(&state) {
         state.checkpoint(config);
-        let err = LoopError::TokenCapExceeded {
-            used: state.usage.total(),
-            cap: state.max_tokens,
-        };
         state.write_final_log(
             config,
             "token_cap",
@@ -590,6 +616,37 @@ pub fn run(
     run_from_state(provider, config, &mut state)
 }
 
+/// Check whether the total iteration cap has been reached.
+/// Returns Some(LoopError::TotalIterationCap { .. }) if exceeded, None otherwise.
+fn check_iteration_cap(state: &RunState) -> Option<LoopError> {
+    if state.total_iterations >= state.max_total_iterations {
+        Some(LoopError::TotalIterationCap {
+            max_total_iterations: state.max_total_iterations,
+        })
+    } else {
+        None
+    }
+}
+
+/// Check whether the token budget has been exceeded.
+/// Returns Some(LoopError::TokenCapExceeded { .. }) if exceeded, None otherwise.
+/// Returns None if max_tokens is 0 (no cap).
+fn check_token_cap(state: &RunState) -> Option<LoopError> {
+    if state.max_tokens == 0 {
+        return None;
+    }
+
+    let used = state.usage.total();
+    if used > state.max_tokens {
+        Some(LoopError::TokenCapExceeded {
+            used,
+            cap: state.max_tokens,
+        })
+    } else {
+        None
+    }
+}
+
 /// Shared step loop used by both `run()` and `resume()`.
 fn run_from_state(
     provider: &dyn LlmProvider,
@@ -602,12 +659,9 @@ fn run_from_state(
 
         while state.step_state.attempt < state.max_iterations_per_step {
             // --- Global cap guard ---
-            if state.total_iterations >= state.max_total_iterations {
+            if let Some(err) = check_iteration_cap(state) {
                 state.refresh_fingerprint(&config.project_root);
                 state.checkpoint(config);
-                let err = LoopError::TotalIterationCap {
-                    max_total_iterations: state.max_total_iterations,
-                };
                 state.write_final_log(
                     config,
                     "cap_reached",
@@ -668,13 +722,9 @@ fn run_from_state(
                 state.usage.accumulate(usage);
                 state.llm_requests += 1;
             }
-            if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
+            if let Some(err) = check_token_cap(state) {
                 state.refresh_fingerprint(&config.project_root);
                 state.checkpoint(config);
-                let err = LoopError::TokenCapExceeded {
-                    used: state.usage.total(),
-                    cap: state.max_tokens,
-                };
                 state.write_final_log(
                     config,
                     "token_cap",
@@ -883,6 +933,7 @@ mod tests {
     use crate::stats::summarize_run;
     use crate::test_util::TempSandbox;
     use std::collections::VecDeque;
+    use std::process::Command;
     use std::sync::Mutex;
 
     use crate::config::{RunConfig, RunMode};
@@ -949,7 +1000,149 @@ mod tests {
         }
     }
 
+    fn run_state_for_cap_tests() -> RunState {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            max_iterations_per_step: 5,
+            max_total_iterations: 10,
+            max_tokens: 100,
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "step".to_string(),
+                files: vec!["src/main.rs".to_string()],
+            }],
+        };
+
+        RunState::new("goal".to_string(), plan, &config)
+    }
+
+    fn git_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn run_git(project_root: &Path, args: &[&str]) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(project_root)
+            .args(args)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
     // -- Existing behavior tests ------------------------------------------
+
+    #[test]
+    fn workspace_dirty_check_non_git_directory_returns_none() {
+        let sandbox = TempSandbox::new();
+        assert_eq!(check_workspace_dirty(&sandbox), None);
+    }
+
+    #[test]
+    fn workspace_dirty_check_clean_repo_returns_none() {
+        if !git_available() {
+            return;
+        }
+
+        let sandbox = TempSandbox::with_main_rs();
+        assert!(run_git(&sandbox, &["init"]));
+        assert!(run_git(&sandbox, &["config", "user.email", "tod@example.com"]));
+        assert!(run_git(&sandbox, &["config", "user.name", "Tod Test"]));
+        assert!(run_git(&sandbox, &["add", "."]));
+        assert!(run_git(&sandbox, &["commit", "-m", "init"]));
+
+        assert_eq!(check_workspace_dirty(&sandbox), None);
+    }
+
+    #[test]
+    fn workspace_dirty_check_dirty_repo_returns_warning() {
+        if !git_available() {
+            return;
+        }
+
+        let sandbox = TempSandbox::with_main_rs();
+        assert!(run_git(&sandbox, &["init"]));
+        assert!(run_git(&sandbox, &["config", "user.email", "tod@example.com"]));
+        assert!(run_git(&sandbox, &["config", "user.name", "Tod Test"]));
+        assert!(run_git(&sandbox, &["add", "."]));
+        assert!(run_git(&sandbox, &["commit", "-m", "init"]));
+        fs::write(
+            sandbox.join("src/main.rs"),
+            "fn main() { println!(\"dirty\"); }\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            check_workspace_dirty(&sandbox).as_deref(),
+            Some(
+                "warning: workspace has uncommitted changes — consider committing or stashing before running Tod"
+            )
+        );
+    }
+
+    #[test]
+    fn check_iteration_cap_under_limit_returns_none() {
+        let mut state = run_state_for_cap_tests();
+        state.total_iterations = 9;
+        state.max_total_iterations = 10;
+        assert!(matches!(check_iteration_cap(&state), None));
+    }
+
+    #[test]
+    fn check_iteration_cap_at_limit_returns_error() {
+        let mut state = run_state_for_cap_tests();
+        state.total_iterations = 10;
+        state.max_total_iterations = 10;
+        assert!(matches!(
+            check_iteration_cap(&state),
+            Some(LoopError::TotalIterationCap {
+                max_total_iterations: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn check_token_cap_zero_cap_returns_none() {
+        let mut state = run_state_for_cap_tests();
+        state.max_tokens = 0;
+        state.usage = Usage {
+            input_tokens: 500,
+            output_tokens: 500,
+        };
+        assert!(matches!(check_token_cap(&state), None));
+    }
+
+    #[test]
+    fn check_token_cap_at_or_under_cap_returns_none() {
+        let mut state = run_state_for_cap_tests();
+        state.max_tokens = 100;
+        state.usage = Usage {
+            input_tokens: 60,
+            output_tokens: 40,
+        };
+        assert!(matches!(check_token_cap(&state), None));
+    }
+
+    #[test]
+    fn check_token_cap_over_cap_returns_error() {
+        let mut state = run_state_for_cap_tests();
+        state.max_tokens = 100;
+        state.usage = Usage {
+            input_tokens: 60,
+            output_tokens: 41,
+        };
+        assert!(matches!(
+            check_token_cap(&state),
+            Some(LoopError::TokenCapExceeded { used: 101, cap: 100 })
+        ));
+    }
 
     #[test]
     fn dry_run_completes_plan() {
