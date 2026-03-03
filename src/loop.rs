@@ -130,10 +130,15 @@ pub struct AttemptLog {
 /// Structured snapshot of runner output for logging.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnerLog {
+    #[serde(default = "default_runner_stage")]
     pub stage: String,
     pub ok: bool,
     pub output: String,
     pub truncated: bool,
+}
+
+fn default_runner_stage() -> String {
+    "review".to_string()
 }
 
 /// Plan log written once after planning completes.
@@ -146,6 +151,20 @@ pub(crate) struct PlanLog {
     pub plan: Plan,
     #[serde(default)]
     pub usage: Option<Usage>,
+}
+
+/// Terminal run outcome log written once on exit paths after planning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FinalLog {
+    pub run_id: String,
+    pub timestamp_utc: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub step_index: Option<usize>,
+    #[serde(default)]
+    pub attempt: Option<usize>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Run-level state. Owns the plan and tracks progress across all steps.
@@ -265,6 +284,32 @@ impl RunState {
         };
         if let Ok(json) = serde_json::to_string_pretty(&log) {
             let _ = fs::write(dir.join("plan.json"), json);
+        }
+    }
+
+    /// Write final.json to the run's log directory. Best-effort.
+    fn write_final_log(
+        &self,
+        config: &RunConfig,
+        outcome: &str,
+        step_index: Option<usize>,
+        attempt: Option<usize>,
+        message: Option<String>,
+    ) {
+        let dir = config.project_root.join(&self.log_dir);
+        if fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let log = FinalLog {
+            run_id: self.run_id.clone(),
+            timestamp_utc: chrono::Utc::now().to_rfc3339(),
+            outcome: outcome.to_string(),
+            step_index,
+            attempt,
+            message,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&log) {
+            let _ = fs::write(dir.join("final.json"), json);
         }
     }
 
@@ -497,10 +542,18 @@ pub fn run(
     }
     if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
         state.checkpoint(config);
-        return Err(LoopError::TokenCapExceeded {
+        let err = LoopError::TokenCapExceeded {
             used: state.usage.total(),
             cap: state.max_tokens,
-        });
+        };
+        state.write_final_log(
+            config,
+            "token_cap",
+            Some(state.step_index),
+            None,
+            Some(err.to_string()),
+        );
+        return Err(err);
     }
 
     // Write plan log and checkpoint: plan created, about to start step 0.
@@ -524,9 +577,17 @@ fn run_from_state(
             // --- Global cap guard ---
             if state.total_iterations >= state.max_total_iterations {
                 state.checkpoint(config);
-                return Err(LoopError::TotalIterationCap {
+                let err = LoopError::TotalIterationCap {
                     max_total_iterations: state.max_total_iterations,
-                });
+                };
+                state.write_final_log(
+                    config,
+                    "cap_reached",
+                    Some(state.step_index),
+                    (state.step_state.attempt > 0).then_some(state.step_state.attempt),
+                    Some(err.to_string()),
+                );
+                return Err(err);
             }
 
             state.step_state.attempt += 1;
@@ -542,34 +603,85 @@ fn run_from_state(
 
             // --- Generate edits ---
             let (batch, call_usage) =
-                create_edits(provider, &step, &file_context, &config.project_root).map_err(
-                    |source| LoopError::Edit {
-                        step_index: state.step_index,
-                        iteration: state.step_state.attempt,
-                        source,
-                    },
-                )?;
+                match create_edits(provider, &step, &file_context, &config.project_root) {
+                    Ok(result) => result,
+                    Err(source) => {
+                        let output = source.to_string();
+                        let err = LoopError::Edit {
+                            step_index: state.step_index,
+                            iteration: state.step_state.attempt,
+                            source,
+                        };
+                        let run_result = RunResult::Failure {
+                            stage: "edit_generation".to_string(),
+                            output,
+                            truncated: false,
+                        };
+                        state.write_attempt_log(
+                            config,
+                            &EditBatch { edits: vec![] },
+                            &run_result,
+                            "error",
+                            None,
+                        );
+                        state.checkpoint(config);
+                        state.write_final_log(
+                            config,
+                            "edit_error",
+                            Some(state.step_index),
+                            Some(state.step_state.attempt),
+                            Some(err.to_string()),
+                        );
+                        return Err(err);
+                    }
+                };
             if let Some(usage) = &call_usage {
                 state.usage.accumulate(usage);
                 state.llm_requests += 1;
             }
             if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
                 state.checkpoint(config);
-                return Err(LoopError::TokenCapExceeded {
+                let err = LoopError::TokenCapExceeded {
                     used: state.usage.total(),
                     cap: state.max_tokens,
-                });
+                };
+                state.write_final_log(
+                    config,
+                    "token_cap",
+                    Some(state.step_index),
+                    Some(state.step_state.attempt),
+                    Some(err.to_string()),
+                );
+                return Err(err);
             }
 
             // --- Apply + run (or skip in dry-run) ---
             let run_result = if config.dry_run {
                 RunResult::Success
             } else {
-                apply_edits(&batch, &config.project_root).map_err(|source| LoopError::Apply {
-                    step_index: state.step_index,
-                    iteration: state.step_state.attempt,
-                    source,
-                })?;
+                if let Err(source) = apply_edits(&batch, &config.project_root) {
+                    let output = source.to_string();
+                    let err = LoopError::Apply {
+                        step_index: state.step_index,
+                        iteration: state.step_state.attempt,
+                        source,
+                    };
+                    let run_result = RunResult::Failure {
+                        stage: "edit_application".to_string(),
+                        output,
+                        truncated: false,
+                    };
+                    state.write_attempt_log(config, &batch, &run_result, "error", None);
+                    state.checkpoint(config);
+                    state.write_final_log(
+                        config,
+                        "apply_error",
+                        Some(state.step_index),
+                        Some(state.step_state.attempt),
+                        Some(err.to_string()),
+                    );
+                    return Err(err);
+                }
                 run_pipeline(config)
             };
 
@@ -611,20 +723,36 @@ fn run_from_state(
                         call_usage.clone(),
                     );
                     state.checkpoint(config);
-                    return Err(LoopError::Aborted {
+                    let err = LoopError::Aborted {
                         step_index: state.step_index,
                         reason,
-                    });
+                    };
+                    state.write_final_log(
+                        config,
+                        "aborted",
+                        Some(state.step_index),
+                        Some(state.step_state.attempt),
+                        Some(err.to_string()),
+                    );
+                    return Err(err);
                 }
             }
         }
 
         if !step_succeeded {
             state.checkpoint(config);
-            return Err(LoopError::Aborted {
+            let err = LoopError::Aborted {
                 step_index: state.step_index,
                 reason: "step did not reach success within per-step cap".to_string(),
-            });
+            };
+            state.write_final_log(
+                config,
+                "aborted",
+                Some(state.step_index),
+                Some(state.step_state.attempt),
+                Some(err.to_string()),
+            );
+            return Err(err);
         }
 
         // --- Advance to next step with a clean StepState ---
@@ -636,6 +764,7 @@ fn run_from_state(
         state.checkpoint(config);
     }
 
+    state.write_final_log(config, "success", None, None, None);
     Ok(state.report())
 }
 
@@ -667,10 +796,18 @@ pub fn resume(
     state.fingerprint = current;
 
     if state.max_tokens > 0 && state.usage.total() >= state.max_tokens {
-        return Err(LoopError::TokenCapExceeded {
+        let err = LoopError::TokenCapExceeded {
             used: state.usage.total(),
             cap: state.max_tokens,
-        });
+        };
+        state.write_final_log(
+            config,
+            "token_cap",
+            Some(state.step_index),
+            (state.step_state.attempt > 0).then_some(state.step_state.attempt),
+            Some(err.to_string()),
+        );
+        return Err(err);
     }
 
     // Continue the step loop from where we left off
@@ -684,6 +821,7 @@ pub fn resume(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats::summarize_run;
     use crate::test_util::TempSandbox;
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -796,6 +934,212 @@ mod tests {
 
         let err = run(&provider, "goal", &config).unwrap_err();
         assert!(matches!(err, LoopError::TotalIterationCap { .. }));
+    }
+
+    #[test]
+    fn run_writes_final_log_on_success() {
+        let sandbox = TempSandbox::with_main_rs();
+
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"update main","files":["src/main.rs"]}]}"#,
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"ok\"); }"}]}"#,
+        ]);
+
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let _ = run(&provider, "update", &config).unwrap();
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+
+        let final_json = fs::read_to_string(entries[0].join("final.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&final_json).unwrap();
+        assert_eq!(parsed["outcome"], "success");
+    }
+
+    #[test]
+    fn run_writes_final_log_on_cap_reached() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"step 0","files":["src/main.rs"]},{"description":"step 1","files":["src/main.rs"]}]}"#,
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"ok\"); }"}]}"#,
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 1,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "cap", &config).unwrap_err();
+        assert!(matches!(err, LoopError::TotalIterationCap { .. }));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+
+        let final_json = fs::read_to_string(entries[0].join("final.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&final_json).unwrap();
+        assert_eq!(parsed["outcome"], "cap_reached");
+    }
+
+    #[test]
+    fn edit_error_writes_attempt_and_checkpoint() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"s0","files":["src/main.rs"]}]}"#,
+            "not json",
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(
+            err,
+            LoopError::Edit {
+                step_index: 0,
+                iteration: 1,
+                ..
+            }
+        ));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+        let run_dir = &entries[0];
+
+        let attempt_json = fs::read_to_string(run_dir.join("step_0_attempt_1.json")).unwrap();
+        let attempt: AttemptLog = serde_json::from_str(&attempt_json).unwrap();
+        assert_eq!(attempt.runner_output.stage, "edit_generation");
+        assert_eq!(attempt.review_decision, "error");
+
+        let state_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let state: RunState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.step_state.attempt, 1);
+        assert_eq!(state.total_iterations, 1);
+
+        let final_json = fs::read_to_string(run_dir.join("final.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&final_json).unwrap();
+        assert_eq!(parsed["outcome"], "edit_error");
+    }
+
+    #[test]
+    fn apply_error_writes_attempt_and_checkpoint() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"s0","files":["src/main.rs"]}]}"#,
+            r#"{"edits":[{"action":"replace_range","path":"src/missing.rs","start_line":1,"end_line":1,"content":"fn missing() {}"}]}"#,
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: false,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(
+            err,
+            LoopError::Apply {
+                step_index: 0,
+                iteration: 1,
+                ..
+            }
+        ));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+        let run_dir = &entries[0];
+
+        let attempt_json = fs::read_to_string(run_dir.join("step_0_attempt_1.json")).unwrap();
+        let attempt: AttemptLog = serde_json::from_str(&attempt_json).unwrap();
+        assert_eq!(attempt.runner_output.stage, "edit_application");
+        assert_eq!(attempt.review_decision, "error");
+
+        let state_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let state: RunState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.step_state.attempt, 1);
+        assert_eq!(state.total_iterations, 1);
+
+        let final_json = fs::read_to_string(run_dir.join("final.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&final_json).unwrap();
+        assert_eq!(parsed["outcome"], "apply_error");
+    }
+
+    #[test]
+    fn error_attempt_does_not_count_as_abort() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"s0","files":["src/main.rs"]}]}"#,
+            "not json",
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Edit { .. }));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+
+        let summary = summarize_run(&entries[0]).unwrap();
+        assert_eq!(summary.steps_aborted, 0);
     }
 
     struct UsageProvider {
@@ -1207,6 +1551,23 @@ mod tests {
         assert_eq!(parsed["attempt"], 1);
         assert_eq!(parsed["review_decision"], "proceed");
         assert_eq!(parsed["runner_output"]["ok"], true);
+    }
+
+    #[test]
+    fn legacy_attempt_without_stage_deserializes() {
+        let legacy_json = r#"{
+            "run_id":"20260302_000000",
+            "step_index":0,
+            "attempt":1,
+            "timestamp_utc":"2026-03-02T00:00:00Z",
+            "run_mode":"default",
+            "edit_batch":{"edits":[]},
+            "runner_output":{"ok":false,"output":"legacy failure","truncated":false},
+            "review_decision":"retry"
+        }"#;
+
+        let parsed: AttemptLog = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.runner_output.stage, "review");
     }
 
     // -- Fingerprint ------------------------------------------------------

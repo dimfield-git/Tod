@@ -5,13 +5,17 @@ use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
-use crate::r#loop::{AttemptLog, PlanLog, RunState};
+use crate::r#loop::{AttemptLog, FinalLog, PlanLog, RunState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Success,
     Aborted,
     CapReached,
+    TokenCap,
+    EditError,
+    ApplyError,
+    PlanError,
 }
 
 impl std::fmt::Display for RunOutcome {
@@ -20,6 +24,10 @@ impl std::fmt::Display for RunOutcome {
             Self::Success => write!(f, "success"),
             Self::Aborted => write!(f, "aborted"),
             Self::CapReached => write!(f, "cap_reached"),
+            Self::TokenCap => write!(f, "token_cap"),
+            Self::EditError => write!(f, "edit_error"),
+            Self::ApplyError => write!(f, "apply_error"),
+            Self::PlanError => write!(f, "plan_error"),
         }
     }
 }
@@ -29,6 +37,7 @@ pub struct RunSummary {
     pub run_id: String,
     pub goal: String,
     pub outcome: RunOutcome,
+    pub terminal_message: Option<String>,
     pub steps_completed: usize,
     pub steps_aborted: usize,
     pub total_attempts: usize,
@@ -120,6 +129,19 @@ fn parse_attempt_filename(name: &str) -> Option<(usize, usize)> {
     Some((step, attempt))
 }
 
+fn parse_final_outcome(outcome: &str) -> Option<RunOutcome> {
+    match outcome {
+        "success" => Some(RunOutcome::Success),
+        "aborted" => Some(RunOutcome::Aborted),
+        "cap_reached" => Some(RunOutcome::CapReached),
+        "token_cap" => Some(RunOutcome::TokenCap),
+        "edit_error" => Some(RunOutcome::EditError),
+        "apply_error" => Some(RunOutcome::ApplyError),
+        "plan_error" => Some(RunOutcome::PlanError),
+        _ => None,
+    }
+}
+
 pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     if !run_log_dir.exists() {
         return Err(StatsError::NoData);
@@ -130,6 +152,12 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         return Err(StatsError::NoData);
     }
     let plan_log: PlanLog = read_json(&plan_path)?;
+    let final_path = run_log_dir.join("final.json");
+    let final_log = if final_path.exists() {
+        Some(read_json::<FinalLog>(&final_path)?)
+    } else {
+        None
+    };
 
     let mut attempt_files = Vec::new();
     let reader = fs::read_dir(run_log_dir).map_err(|e| StatsError::Io {
@@ -217,13 +245,18 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     let mut failure_stages: Vec<(String, usize)> = failure_counts.into_iter().collect();
     failure_stages.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let outcome = if steps_completed == plan_steps {
+    let heuristic_outcome = if steps_completed == plan_steps {
         RunOutcome::Success
     } else if steps_aborted > 0 {
         RunOutcome::Aborted
     } else {
         RunOutcome::CapReached
     };
+    let outcome = final_log
+        .as_ref()
+        .and_then(|log| parse_final_outcome(&log.outcome))
+        .unwrap_or(heuristic_outcome);
+    let terminal_message = final_log.and_then(|log| log.message);
 
     let usage_cumulative = attempt_logs
         .last()
@@ -243,6 +276,7 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         run_id: plan_log.run_id,
         goal: plan_log.goal,
         outcome,
+        terminal_message,
         steps_completed,
         steps_aborted,
         total_attempts,
@@ -324,7 +358,8 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
         match summary.outcome {
             RunOutcome::Success => runs_succeeded += 1,
             RunOutcome::Aborted => runs_aborted += 1,
-            RunOutcome::CapReached => runs_cap_reached += 1,
+            RunOutcome::CapReached | RunOutcome::TokenCap => runs_cap_reached += 1,
+            RunOutcome::EditError | RunOutcome::ApplyError | RunOutcome::PlanError => {}
         }
 
         for (stage, count) in summary.failure_stages {
@@ -377,6 +412,11 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let terminal_line = summary
+        .terminal_message
+        .as_ref()
+        .map(|message| format!("\nTerminal:   {message}"))
+        .unwrap_or_default();
 
     let tokens_line = if summary.total_tokens > 0 {
         let legacy_suffix = if summary.llm_requests_plan == 0 {
@@ -398,7 +438,7 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
     };
 
     format!(
-        "Run:        {}\nGoal:       {}\nOutcome:    {}\nProgress:   {}/{} steps completed, {} aborted\nAttempts:   {} total ({})\nFailures:   {}\nLogs:       .tod/logs/{}/",
+        "Run:        {}\nGoal:       {}\nOutcome:    {}\nProgress:   {}/{} steps completed, {} aborted\nAttempts:   {} total ({})\nFailures:   {}{}\nLogs:       .tod/logs/{}/",
         summary.run_id,
         summary.goal,
         summary.outcome,
@@ -408,6 +448,7 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
         summary.total_attempts,
         attempts,
         failures,
+        terminal_line,
         summary.run_id,
     ) + &tokens_line
 }
@@ -582,6 +623,22 @@ mod tests {
         .unwrap();
     }
 
+    fn write_final(run_dir: &Path, run_id: &str, outcome: &str, message: Option<&str>) {
+        let mut value = json!({
+            "run_id": run_id,
+            "timestamp_utc": "2026-03-02T00:00:00Z",
+            "outcome": outcome
+        });
+        if let Some(message) = message {
+            value["message"] = json!(message);
+        }
+        fs::write(
+            run_dir.join("final.json"),
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn summarize_run_success() {
         let sandbox = TempSandbox::new();
@@ -610,6 +667,56 @@ mod tests {
         let summary = summarize_run(&run_dir).unwrap();
         assert_eq!(summary.outcome, RunOutcome::Aborted);
         assert_eq!(summary.steps_aborted, 1);
+    }
+
+    #[test]
+    fn summarize_run_prefers_final_log_outcome() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260302_000000";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+
+        write_plan(&run_dir, run_id, "goal", 1);
+        write_attempt(&run_dir, run_id, 0, 1, "edit_generation", false, "error");
+        write_final(
+            &run_dir,
+            run_id,
+            "edit_error",
+            Some("edit parse failed: expected JSON"),
+        );
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.outcome, RunOutcome::EditError);
+        assert_eq!(
+            summary.terminal_message,
+            Some("edit parse failed: expected JSON".to_string())
+        );
+    }
+
+    #[test]
+    fn summarize_run_error_decision_not_counted_as_abort() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260302_000100";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+
+        write_plan(&run_dir, run_id, "goal", 1);
+        write_attempt(&run_dir, run_id, 0, 1, "edit_generation", false, "error");
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.steps_aborted, 0);
+    }
+
+    #[test]
+    fn summarize_run_legacy_without_final_log_still_works() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260302_000200";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+
+        write_plan(&run_dir, run_id, "legacy goal", 1);
+        write_attempt(&run_dir, run_id, 0, 1, "test", false, "retry");
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.outcome, RunOutcome::CapReached);
+        assert!(summary.terminal_message.is_none());
     }
 
     #[test]
@@ -840,6 +947,7 @@ mod tests {
             run_id: "r1".to_string(),
             goal: "g".to_string(),
             outcome: RunOutcome::Success,
+            terminal_message: None,
             steps_completed: 1,
             steps_aborted: 0,
             total_attempts: 1,
@@ -863,6 +971,7 @@ mod tests {
             run_id: "r1".to_string(),
             goal: "g".to_string(),
             outcome: RunOutcome::Success,
+            terminal_message: None,
             steps_completed: 1,
             steps_aborted: 0,
             total_attempts: 1,
@@ -885,6 +994,7 @@ mod tests {
             run_id: "r1".to_string(),
             goal: "g".to_string(),
             outcome: RunOutcome::Success,
+            terminal_message: None,
             steps_completed: 1,
             steps_aborted: 0,
             total_attempts: 1,

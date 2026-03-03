@@ -12,16 +12,16 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current instructions (see [`PHASE12.md`](PHASE12.md)) → Future phases.
+- **Priority order:** Current instructions (see next phase file, e.g. `PHASE13.md` when present) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 160 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 169 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–11 complete, Phase 12 next.
+Linux-only. No GUI dependencies. Phases 1–12 complete, Phase 13 next.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -61,6 +61,7 @@ docs/
   state.json                          RunState checkpoint (overwritten atomically each time)
   logs/<run_id>/
     plan.json                         Written once after planning (includes usage data from Phase 11+)
+    final.json                        Written once on run exit (outcome, step, message)
     step_N_attempt_M.json             One per edit→apply→run→review cycle
 ```
 
@@ -79,6 +80,7 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`).
 - Resume must not issue LLM calls when checkpoint usage already meets or exceeds the token cap.
 - Stats request counts reflect all billed API calls (planner + editor). Planner usage is recorded in `plan.json`. Legacy logs without planner usage are handled gracefully.
+- Every run exit after planning produces `final.json` with an explicit terminal outcome. Stats uses `final.json` as source of truth when present and falls back to heuristic inference for legacy logs.
 
 ## Phase History
 
@@ -95,4 +97,4 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 | 9 | Working prototype — live run validation, context.rs, retry backoff, init command | ✅ Done |
 | 10 | External usability — naming consistency, --project flag, shared utilities, structured errors, LICENSE | ✅ Done |
 | 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
-| 12 | Failure observability — terminal outcome log, pre-runner error logging, stats outcome fidelity | 🔜 Next |
+| 12 | Failure observability — terminal outcome log, pre-runner error logging, stats outcome fidelity | ✅ Done |

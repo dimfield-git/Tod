@@ -22,6 +22,11 @@ cargo run -- run --project ./myproject "Add a CLI flag --name and print hello, <
 - `status [--project <path>]`: show summary for the latest run.
 - `stats [--project <path>] [--last N]`: summarize recent run history from `.tod/logs/`.
 
+Status/stats outcome notes:
+- When present, `.tod/logs/<run_id>/final.json` is the source of truth for terminal run outcome and terminal message.
+- Legacy runs without `final.json` are still supported; outcome falls back to attempt-log inference.
+- Attempt logs with `review_decision: "error"` represent pre-review infrastructure failures and are not counted as reviewer aborts.
+
 ## Configuration
 
 - `ANTHROPIC_API_KEY`: required API key for Anthropic.
@@ -58,6 +63,6 @@ src/
 
 ## Status
 
-Prototype: Phases 1-10 complete.
+Prototype: Phases 1-12 complete.
 
 <img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/1186b466-ce17-4bf3-af6f-157662fae955" />
