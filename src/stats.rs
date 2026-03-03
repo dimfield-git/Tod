@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
-use crate::r#loop::{AttemptLog, FinalLog, PlanLog, RunState};
+use crate::log_schema::{AttemptLog, FinalLog, PlanLog};
+use crate::r#loop::RunState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
@@ -57,6 +58,10 @@ pub struct MultiRunSummary {
     pub runs_succeeded: usize,
     pub runs_aborted: usize,
     pub runs_cap_reached: usize,
+    pub runs_token_cap: usize,
+    pub runs_edit_error: usize,
+    pub runs_apply_error: usize,
+    pub runs_plan_error: usize,
     pub avg_attempts: f64,
     pub avg_tokens: f64,
     pub most_common_failure_stage: Option<(String, usize)>,
@@ -147,17 +152,38 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
         return Err(StatsError::NoData);
     }
 
-    let plan_path = run_log_dir.join("plan.json");
-    if !plan_path.exists() {
-        return Err(StatsError::NoData);
-    }
-    let plan_log: PlanLog = read_json(&plan_path)?;
     let final_path = run_log_dir.join("final.json");
     let final_log = if final_path.exists() {
         Some(read_json::<FinalLog>(&final_path)?)
     } else {
         None
     };
+    let plan_path = run_log_dir.join("plan.json");
+    if !plan_path.exists() {
+        if let Some(log) = final_log {
+            if parse_final_outcome(&log.outcome) == Some(RunOutcome::PlanError) {
+                return Ok(RunSummary {
+                    run_id: log.run_id,
+                    goal: "(plan unavailable)".to_string(),
+                    outcome: RunOutcome::PlanError,
+                    terminal_message: log.message,
+                    steps_completed: 0,
+                    steps_aborted: 0,
+                    total_attempts: 0,
+                    attempts_per_step: vec![],
+                    failure_stages: vec![],
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    llm_requests_total: 1,
+                    llm_requests_plan: 1,
+                    llm_requests_edit: 0,
+                });
+            }
+        }
+        return Err(StatsError::NoData);
+    }
+    let plan_log: PlanLog = read_json(&plan_path)?;
 
     let mut attempt_files = Vec::new();
     let reader = fs::read_dir(run_log_dir).map_err(|e| StatsError::Io {
@@ -265,11 +291,8 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     let input_tokens = usage_cumulative.input_tokens;
     let output_tokens = usage_cumulative.output_tokens;
     let total_tokens = usage_cumulative.total();
-    let llm_requests_plan: u64 = if plan_log.usage.is_some() { 1 } else { 0 };
-    let llm_requests_edit = attempt_logs
-        .iter()
-        .filter(|log| log.usage_this_call.is_some())
-        .count() as u64;
+    let llm_requests_plan: u64 = 1;
+    let llm_requests_edit = attempt_logs.len() as u64;
     let llm_requests_total = llm_requests_plan + llm_requests_edit;
 
     Ok(RunSummary {
@@ -345,6 +368,10 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
     let mut runs_succeeded = 0usize;
     let mut runs_aborted = 0usize;
     let mut runs_cap_reached = 0usize;
+    let mut runs_token_cap = 0usize;
+    let mut runs_edit_error = 0usize;
+    let mut runs_apply_error = 0usize;
+    let mut runs_plan_error = 0usize;
     let mut attempts_total = 0usize;
     let mut tokens_total = 0u64;
     let mut failure_counts: HashMap<String, usize> = HashMap::new();
@@ -358,8 +385,11 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
         match summary.outcome {
             RunOutcome::Success => runs_succeeded += 1,
             RunOutcome::Aborted => runs_aborted += 1,
-            RunOutcome::CapReached | RunOutcome::TokenCap => runs_cap_reached += 1,
-            RunOutcome::EditError | RunOutcome::ApplyError | RunOutcome::PlanError => {}
+            RunOutcome::CapReached => runs_cap_reached += 1,
+            RunOutcome::TokenCap => runs_token_cap += 1,
+            RunOutcome::EditError => runs_edit_error += 1,
+            RunOutcome::ApplyError => runs_apply_error += 1,
+            RunOutcome::PlanError => runs_plan_error += 1,
         }
 
         for (stage, count) in summary.failure_stages {
@@ -387,6 +417,10 @@ pub fn summarize_runs(tod_dir: &Path, limit: usize) -> Result<MultiRunSummary, S
         runs_succeeded,
         runs_aborted,
         runs_cap_reached,
+        runs_token_cap,
+        runs_edit_error,
+        runs_apply_error,
+        runs_plan_error,
         avg_attempts,
         avg_tokens,
         most_common_failure_stage,
@@ -419,19 +453,13 @@ pub fn format_run_summary(summary: &RunSummary) -> String {
         .unwrap_or_default();
 
     let tokens_line = if summary.total_tokens > 0 {
-        let legacy_suffix = if summary.llm_requests_plan == 0 {
-            " (planner usage unknown — legacy logs)"
-        } else {
-            ""
-        };
         format!(
-            "\nTokens:     {} in / {} out ({} requests: {} plan, {} edit){}",
+            "\nTokens:     {} in / {} out ({} requests: {} plan, {} edit)",
             summary.input_tokens,
             summary.output_tokens,
             summary.llm_requests_total,
             summary.llm_requests_plan,
             summary.llm_requests_edit,
-            legacy_suffix,
         )
     } else {
         String::new()
@@ -459,18 +487,25 @@ pub fn format_multi_run_summary(summary: &MultiRunSummary) -> String {
         None => "none".to_string(),
     };
 
-    let cap_str = if summary.runs_cap_reached > 0 {
-        format!("  Cap reached: {}", summary.runs_cap_reached)
-    } else {
-        String::new()
-    };
+    let outcome_line = [
+        ("Succeeded", summary.runs_succeeded, true),
+        ("Aborted", summary.runs_aborted, false),
+        ("Cap reached", summary.runs_cap_reached, false),
+        ("Token cap", summary.runs_token_cap, false),
+        ("Edit error", summary.runs_edit_error, false),
+        ("Apply error", summary.runs_apply_error, false),
+        ("Plan error", summary.runs_plan_error, false),
+    ]
+    .into_iter()
+    .filter(|(_, count, force)| *force || *count > 0)
+    .map(|(label, count, _)| format!("{label}: {count}"))
+    .collect::<Vec<_>>()
+    .join("  ");
 
     format!(
-        "Last {} runs:\n  Succeeded: {}  Aborted: {}{}\n  Avg attempts: {:.1}\n  Avg tokens: {:.0}\n  Most common failure: {}",
+        "Last {} runs:\n  {}\n  Avg attempts: {:.1}\n  Avg tokens: {:.0}\n  Most common failure: {}",
         summary.runs_total,
-        summary.runs_succeeded,
-        summary.runs_aborted,
-        cap_str,
+        outcome_line,
         summary.avg_attempts,
         summary.avg_tokens,
         failure,
@@ -722,6 +757,24 @@ mod tests {
     }
 
     #[test]
+    fn summarize_run_plan_error_without_plan_log() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260303_010000";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+        fs::create_dir_all(&run_dir).unwrap();
+        write_final(&run_dir, run_id, "plan_error", Some("model refused"));
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.run_id, run_id);
+        assert_eq!(summary.goal, "(plan unavailable)");
+        assert_eq!(summary.outcome, RunOutcome::PlanError);
+        assert_eq!(summary.terminal_message.as_deref(), Some("model refused"));
+        assert_eq!(summary.llm_requests_plan, 1);
+        assert_eq!(summary.llm_requests_edit, 0);
+        assert_eq!(summary.llm_requests_total, 1);
+    }
+
+    #[test]
     fn summarize_run_failure_stages() {
         let sandbox = TempSandbox::new();
         let run_id = "20260224_143022";
@@ -821,9 +874,26 @@ mod tests {
         );
 
         let summary = summarize_run(&run_dir).unwrap();
-        assert_eq!(summary.llm_requests_plan, 0);
+        assert_eq!(summary.llm_requests_plan, 1);
         assert_eq!(summary.llm_requests_edit, 1);
-        assert_eq!(summary.llm_requests_total, 1);
+        assert_eq!(summary.llm_requests_total, 2);
+    }
+
+    #[test]
+    fn summarize_run_request_count_independent_of_usage_fields() {
+        let sandbox = TempSandbox::new();
+        let run_id = "count_test";
+        let run_dir = sandbox.join(format!(".tod/logs/{run_id}"));
+
+        write_plan(&run_dir, run_id, "test goal", 1);
+        write_attempt(&run_dir, run_id, 0, 1, "test", false, "retry");
+        write_attempt(&run_dir, run_id, 0, 2, "test", false, "retry");
+        write_final(&run_dir, run_id, "aborted", Some("test abort"));
+
+        let summary = summarize_run(&run_dir).expect("should summarize");
+        assert_eq!(summary.llm_requests_plan, 1);
+        assert_eq!(summary.llm_requests_edit, 2);
+        assert_eq!(summary.llm_requests_total, 3);
     }
 
     #[test]
@@ -962,11 +1032,61 @@ mod tests {
         assert_eq!(summary.runs_succeeded, 1);
         assert_eq!(summary.runs_aborted, 1);
         assert_eq!(summary.runs_cap_reached, 1);
+        assert_eq!(summary.runs_token_cap, 0);
+        assert_eq!(summary.runs_edit_error, 0);
+        assert_eq!(summary.runs_apply_error, 0);
+        assert_eq!(summary.runs_plan_error, 0);
         assert!((summary.avg_attempts - (4.0 / 3.0)).abs() < f64::EPSILON);
         assert_eq!(
             summary.most_common_failure_stage,
             Some(("build".to_string(), 2))
         );
+    }
+
+    #[test]
+    fn summarize_runs_counts_terminal_outcomes() {
+        let sandbox = TempSandbox::new();
+        let logs_dir = sandbox.join(".tod/logs");
+        let runs = [
+            ("20260303_000001", "success"),
+            ("20260303_000002", "aborted"),
+            ("20260303_000003", "cap_reached"),
+            ("20260303_000004", "token_cap"),
+            ("20260303_000005", "edit_error"),
+            ("20260303_000006", "apply_error"),
+            ("20260303_000007", "plan_error"),
+        ];
+
+        for (run_id, outcome) in runs {
+            let run_dir = logs_dir.join(run_id);
+            write_plan(&run_dir, run_id, "goal", 1);
+            write_final(&run_dir, run_id, outcome, None);
+        }
+
+        let summary = summarize_runs(&sandbox.join(".tod"), 10).unwrap();
+        assert_eq!(summary.runs_total, 7);
+        assert_eq!(summary.runs_succeeded, 1);
+        assert_eq!(summary.runs_aborted, 1);
+        assert_eq!(summary.runs_cap_reached, 1);
+        assert_eq!(summary.runs_token_cap, 1);
+        assert_eq!(summary.runs_edit_error, 1);
+        assert_eq!(summary.runs_apply_error, 1);
+        assert_eq!(summary.runs_plan_error, 1);
+    }
+
+    #[test]
+    fn summarize_runs_includes_plan_error_without_plan_log() {
+        let sandbox = TempSandbox::new();
+        let logs_dir = sandbox.join(".tod/logs");
+        let run_id = "20260303_020000";
+        let run_dir = logs_dir.join(run_id);
+        fs::create_dir_all(&run_dir).unwrap();
+        write_final(&run_dir, run_id, "plan_error", Some("planner failed"));
+
+        let summary = summarize_runs(&sandbox.join(".tod"), 5).unwrap();
+        assert_eq!(summary.runs_total, 1);
+        assert_eq!(summary.runs_plan_error, 1);
+        assert_eq!(summary.runs_succeeded, 0);
     }
 
     #[test]
@@ -979,6 +1099,10 @@ mod tests {
         assert_eq!(summary.runs_succeeded, 0);
         assert_eq!(summary.runs_aborted, 0);
         assert_eq!(summary.runs_cap_reached, 0);
+        assert_eq!(summary.runs_token_cap, 0);
+        assert_eq!(summary.runs_edit_error, 0);
+        assert_eq!(summary.runs_apply_error, 0);
+        assert_eq!(summary.runs_plan_error, 0);
         assert_eq!(summary.avg_attempts, 0.0);
         assert_eq!(summary.avg_tokens, 0.0);
         assert_eq!(summary.most_common_failure_stage, None);
@@ -1032,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn format_run_summary_legacy_plan_annotation() {
+    fn format_run_summary_does_not_show_legacy_annotation() {
         let summary = RunSummary {
             run_id: "r1".to_string(),
             goal: "g".to_string(),
@@ -1051,6 +1175,6 @@ mod tests {
             llm_requests_edit: 1,
         };
         let rendered = format_run_summary(&summary);
-        assert!(rendered.contains("legacy"));
+        assert!(!rendered.contains("legacy"));
     }
 }

@@ -8,6 +8,7 @@ mod planner;
 mod reviewer;
 mod runner;
 mod schema;
+mod log_schema;
 mod stats;
 mod util;
 #[cfg(test)]

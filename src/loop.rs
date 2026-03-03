@@ -8,6 +8,7 @@ use crate::config::{RunConfig, RunMode};
 use crate::context::{self, ContextError, MAX_TREE_DEPTH};
 use crate::editor::{create_edits, EditError};
 use crate::llm::{LlmProvider, Usage};
+use crate::log_schema::{AttemptLog, FinalLog, PlanLog, RunnerLog};
 use crate::planner::{create_plan, Plan, PlanError};
 use crate::reviewer::{review, ReviewDecision};
 use crate::runner::{apply_edits, run_pipeline, ApplyError, RunResult};
@@ -150,67 +151,6 @@ fn compute_fingerprint(project_root: &Path) -> Fingerprint {
         total_bytes,
         hash,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Log records
-// ---------------------------------------------------------------------------
-
-/// Structured log for a single edit→apply→run→review cycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttemptLog {
-    pub run_id: String,
-    pub step_index: usize,
-    pub attempt: usize,
-    pub timestamp_utc: String,
-    pub run_mode: String,
-    pub edit_batch: EditBatch,
-    pub runner_output: RunnerLog,
-    pub review_decision: String,
-    #[serde(default)]
-    pub usage_this_call: Option<Usage>,
-    #[serde(default)]
-    pub usage_cumulative: Usage,
-}
-
-/// Structured snapshot of runner output for logging.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunnerLog {
-    #[serde(default = "default_runner_stage")]
-    pub stage: String,
-    pub ok: bool,
-    pub output: String,
-    pub truncated: bool,
-}
-
-fn default_runner_stage() -> String {
-    "review".to_string()
-}
-
-/// Plan log written once after planning completes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PlanLog {
-    pub run_id: String,
-    pub goal: String,
-    pub timestamp_utc: String,
-    pub run_mode: String,
-    pub plan: Plan,
-    #[serde(default)]
-    pub usage: Option<Usage>,
-}
-
-/// Terminal run outcome log written once on exit paths after planning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct FinalLog {
-    pub run_id: String,
-    pub timestamp_utc: String,
-    pub outcome: String,
-    #[serde(default)]
-    pub step_index: Option<usize>,
-    #[serde(default)]
-    pub attempt: Option<usize>,
-    #[serde(default)]
-    pub message: Option<String>,
 }
 
 /// Run-level state. Owns the plan and tracks progress across all steps.
@@ -594,7 +534,26 @@ pub fn run(
     config: &RunConfig,
 ) -> Result<LoopReport, LoopError> {
     let project_context = context::build_planner_context(&config.project_root)?;
-    let (plan, plan_usage) = create_plan(provider, goal, &project_context)?;
+    let (plan, plan_usage) = match create_plan(provider, goal, &project_context) {
+        Ok(result) => result,
+        Err(error) => {
+            let base_id = chrono::Utc::now().format("%Y%m%d_%H%M%S%.6f").to_string();
+            let mut run_id = base_id.clone();
+            let mut log_dir = config.project_root.join(format!(".tod/logs/{run_id}"));
+            let mut suffix = 2usize;
+            while log_dir.exists() {
+                run_id = format!("{base_id}_{suffix}");
+                log_dir = config.project_root.join(format!(".tod/logs/{run_id}"));
+                suffix += 1;
+            }
+            if let Err(write_error) =
+                crate::log_schema::write_plan_error_artifact(&log_dir, &run_id, &error.to_string())
+            {
+                crate::warn!("failed to write plan_error final.json: {write_error}");
+            }
+            return Err(LoopError::Plan(error));
+        }
+    };
 
     let mut state = RunState::new(goal.to_string(), plan, config);
     if let Some(usage) = &plan_usage {
@@ -1111,6 +1070,41 @@ mod tests {
         let final_json = fs::read_to_string(entries[0].join("final.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&final_json).unwrap();
         assert_eq!(parsed["outcome"], "cap_reached");
+    }
+
+    #[test]
+    fn run_plan_error_writes_terminal_artifact() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec!["not json"]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Plan(_)));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+
+        let run_dir = &entries[0];
+        let final_json = fs::read_to_string(run_dir.join("final.json")).unwrap();
+        let parsed: crate::log_schema::FinalLog = serde_json::from_str(&final_json).unwrap();
+        let run_dir_name = run_dir.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(parsed.run_id, run_dir_name);
+        assert_eq!(parsed.outcome, "plan_error");
+        assert!(parsed.message.is_some());
     }
 
     #[test]
