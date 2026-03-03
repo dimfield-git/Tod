@@ -34,7 +34,7 @@ Platform assumptions:
 
 Current phase state:
 - Phases 1–13 complete
-- Phase 14 is next
+- Phase 14 in progress
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -43,20 +43,21 @@ Core design principle:
 
 ```text
 src/
-  main.rs       entry point + command dispatch (run/resume/status/stats/init)
-  cli.rs        clap command model + run config conversion
-  config.rs     run configuration types (immutable after construction)
-  context.rs    planner/step/retry context building + budget enforcement
-  planner.rs    plan prompt + plan validation
-  editor.rs     edit prompt + edit batch generation
-  schema.rs     edit schema + JSON extraction + path/range/batch validation
-  runner.rs     transactional edit apply + cargo stage execution
-  reviewer.rs   proceed/retry/abort policy
-  llm.rs        LLM provider trait + Anthropic implementation + retries
-  loop.rs       orchestration state machine + checkpointing + resume + logs
-  stats.rs      read-only run/log summarization and formatting
-  util.rs       shared warning + UTF-8-safe preview helper
-  test_util.rs  shared temp sandbox helper (tests only)
+  main.rs         entry point + command dispatch (run/resume/status/stats/init)
+  cli.rs          clap command model + run config conversion
+  config.rs       run configuration types (immutable after construction)
+  context.rs      planner/step/retry context building + budget enforcement
+  planner.rs      plan prompt + plan validation
+  editor.rs       edit prompt + edit batch generation
+  schema.rs       edit schema + JSON extraction + path/range/batch validation
+  runner.rs       transactional edit apply + cargo stage execution
+  reviewer.rs     proceed/retry/abort policy
+  llm.rs          LLM provider trait + Anthropic implementation + retries
+  log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog)
+  loop.rs         orchestration state machine + checkpointing + resume + logs
+  stats.rs        read-only run/log summarization and formatting
+  util.rs         shared warning + UTF-8-safe preview helper
+  test_util.rs    shared temp sandbox helper (tests only)
 
 docs/
   phase*-implementation-*.md        phase implementation logs
@@ -96,8 +97,16 @@ Resume and checkpoint invariants:
 
 Observability invariants:
 - Every post-plan terminal path should write `final.json`.
+- Planner-stage failures must also write `final.json` with `outcome: "plan_error"`.
 - Stats prefers `final.json` as source of truth and falls back for legacy logs.
 - Legacy artifacts must remain deserializable via defaults where practical.
+- Log schema types live in `log_schema.rs`, not in orchestration modules.
+
+Request counting semantics:
+- A request is one logical LLM intent: one plan call = 1 request, one edit call = 1 request.
+- Internal retries in `llm.rs` do not increment the request count.
+- Usage fields (tokens) reflect what the successful response returned.
+- Retry observability (count, latency) is a separate concern for future phases if needed.
 
 ## Quality and Testing Expectations
 
@@ -123,12 +132,19 @@ Observability invariants:
 | 11 | Reliability accounting and token-cap resume guard | Done |
 | 12 | Failure observability and final outcome fidelity | Done |
 | 13 | Resume determinism + fingerprint v2 + run-id hardening | Done |
-| 14 | Observability/schema cohesion and metrics fidelity | Next |
+| 14 | Observability/schema cohesion and metrics fidelity | In progress |
 
 ## Phase 14 Priority (Handoff)
 
-Primary objective for the next phase:
-- Improve operational trust by decoupling log schema, closing planner-stage observability gaps, and tightening stats/accounting semantics.
+Primary objective for the current phase:
+- Decouple log schema from orchestration internals.
+- Close planner-stage observability gap (pre-RunState failures emit `final.json`).
+- Expand multi-run stats with explicit terminal outcome buckets.
+- Harden request counting to logical call semantics, independent of usage-field presence.
+
+Design decisions locked for Phase 14:
+- Log schema structs live in `log_schema.rs`. Helper functions for pre-run artifact writing also land there.
+- Request counting is logical (1 per intent), not transport-level. Retries are invisible to the count.
+- Task 5 (light loop extraction) is conditional: if Tasks 1–2 sufficiently reduce loop.rs pressure, skip it.
 
 Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this reliability work is complete.
-
