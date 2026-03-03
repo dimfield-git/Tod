@@ -1,4 +1,5 @@
 # Tod
+<img width="1536" height="1024" alt="ChatGPT Image Feb 26, 2026, 01_18_40 PM" src="https://github.com/user-attachments/assets/e0c8604f-b6f9-463f-83b4-fa9a1cbf3e51" />
 
 Tod is a minimal Rust coding agent that plans work with an LLM, generates JSON edit batches, validates and applies edits transactionally, runs cargo quality pipelines, and iterates until success or configured caps.
 
@@ -136,3 +137,9 @@ cargo clippy -- -D warnings
 Interactive architecture reference:
 
 - `docs/tod-architecture.html`
+
+
+## Outlook
+<img width="1536" height="1024" alt="ChatGPT Image Mar 4, 2026, 12_04_53 AM" src="https://github.com/user-attachments/assets/8dd47003-6b80-4121-b95c-f489654ba673" />
+
+
