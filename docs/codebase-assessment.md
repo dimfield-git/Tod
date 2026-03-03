@@ -1,131 +1,122 @@
-# Tod Codebase Assessment (Post-Phase 16)
+# Tod Codebase Assessment (Post-Phase 17)
 
-Date: 2026-03-03
+Date: 2026-03-03  
 Scope reviewed: full `src/` surface, runtime behavior, tests, and operator docs.
 
 Validation baseline on current tree:
-- `cargo test`: **203 passed, 1 ignored, 0 failed**
+- `cargo test`: **215 passed, 1 ignored, 0 failed**
 - `cargo clippy -- -D warnings`: **clean**
 
 ---
 
 ## 1. Executive Assessment
 
-Tod is in a strong engineering state for a terminal-only Rust coding agent focused on deterministic execution and compatibility safety.
+Tod remains in a strong engineering state for a deterministic, terminal-first Rust coding agent.
 
-Post-Phase-16 status:
-- Operator guidance exists and is actionable (`docs/runbook.md`).
-- `run()` now emits a non-blocking dirty-workspace warning (safety-forward default without preventing execution).
-- Iteration/token cap decisions are now explicit pure helpers in `loop.rs` (maintainability gain, behavior preserved).
-- `status`/`stats` now support machine-readable `--json` output while preserving existing human format.
+Post-Phase-17 status:
+- Observability contracts are materially stronger (JSON and human-output contract tests are broader).
+- Operator experience improved (startup/step/attempt/review/resume lifecycle messaging).
+- Error surfaces are more actionable (guidance appended directly in `LoopError::Display`).
+- Completion output is richer and operator-useful (`tokens`, `requests`, `logs` path).
+- Compatibility and safety invariants remain intact.
 
 Bottom line:
 - **Correctness and safety are strong.**
-- **Operator usability materially improved in Phase 16.**
-- **Primary residual risk is orchestration concentration in `src/loop.rs` and scaling precision on larger repos.**
+- **Operator trust/clarity is significantly improved.**
+- **Primary residual risks are concentrated in orchestration complexity and observability/accounting precision edges.**
 
 ---
 
 ## 2. Engineering Quality Snapshot
 
-### Determinism and safety
+## Determinism and safety
 
 Strong:
-- Strict path validation and schema checks before apply.
-- Transactional apply model with rollback-on-failure semantics.
-- Stable artifact contract under `.tod/`.
-- Resume fingerprinting with legacy compatibility behavior explicitly preserved.
-- No async/global mutable runtime complexity.
+- Strict path/schema validation before apply (`schema.rs`).
+- Transactional apply with rollback-on-failure semantics (`runner.rs`).
+- Versioned fingerprinting + legacy compatibility guardrails (`loop.rs`).
+- Best-effort persistence boundary with atomic checkpoint write pattern (`loop_io.rs`).
+- No async runtime, no global mutable runtime state.
 
 Residual risk:
-- `--force` resume is intentionally dangerous when workspace drift exists; this is documented and should remain explicit in UX.
-- TOCTOU is still theoretically possible under concurrent external file mutation.
+- `--force` resume remains intentionally dangerous under workspace drift (correctly documented, still operator-risky by design).
+- TOCTOU remains theoretically possible under external concurrent mutation.
 
-### Test posture
+## Test posture
 
 Strong:
-- High module-level unit coverage in high-risk components (`loop`, `schema`, `runner`, `stats`).
-- Phase-16 additions introduced targeted regression tests (dirty workspace checks, cap helper logic, JSON formatters, CLI parsing).
+- High unit coverage in highest-risk modules (`loop`, `schema`, `runner`, `stats`).
+- Phase 17 added contract tests for output shape and compatibility behaviors.
 
 Residual gap:
-- No golden-contract integration fixture set for end-to-end CLI output contracts across human + JSON modes.
+- No dedicated CLI-level integration harness for stdout/stderr contract behavior across all command variants.
+- No benchmark fixture set for repeated large-repo runs and observability trend validation.
 
 ---
 
 ## 3. Product Utility Assessment (Today)
 
-Tod is practically usable now for:
-1. Small/medium Rust maintenance tasks in terminal workflows.
-2. Strict-gated maintenance loops (`fmt`/`clippy`/`test`) when quality gates matter.
-3. Dry-run planning and failure triage using persisted artifacts.
-4. Interrupted run continuation with deterministic profile reuse.
+Tod is production-useful for:
+1. Small/medium Rust maintenance loops where deterministic safety is required.
+2. Strict-gated maintenance (`fmt`/`clippy`/`test`) with bounded retry/token caps.
+3. Dry-run and postmortem workflows via persistent `.tod` artifacts.
+4. Interrupted-run continuation with profile/fingerprint compatibility protections.
 
-Tod is not yet fully productized for broader adoption due to:
-1. Central orchestration complexity still concentrated in a single large module.
-2. Edit precision limitations for very large files/repos (contract is still `write_file` / `replace_range`).
-3. Single-provider dependency and limited backend flexibility.
+Tod still has constraints:
+1. `loop.rs` remains a large, high-blast-radius module.
+2. Large-repo effectiveness is bounded by context construction/edit granularity.
+3. Single-provider execution path persists (strategic deferral, not an immediate correctness issue).
 
 ---
 
 ## 4. Architecture Health
 
-### Boundary quality
+## Boundary quality
 
-- `log_schema.rs`: clean data/serde-only boundary (healthy).
-- `loop_io.rs`: persistence + run identity ownership is clear (healthy).
-- `loop.rs`: orchestration ownership is correct but heavy (watch area).
-- `stats.rs`: compatibility-aware summarization with dual output modes (healthy, growing).
+Healthy boundaries:
+- `log_schema.rs`: pure data + serde defaults.
+- `loop_io.rs`: persistence + run identity allocation.
+- `stats.rs`: read-only summarization/formatting with compatibility-first behavior.
 
-### Hotspot
+Watch boundary:
+- `loop.rs`: still carries substantial orchestration, terminal pathing, and runtime accounting responsibilities.
 
-`src/loop.rs` remains the largest change-risk surface.
+## Hotspots
 
-Reason:
-- It still owns substantial orchestration flow, checkpoint timing, and terminal-path behavior.
-- Even with extractions from Phases 15–16, change blast radius remains higher than other modules.
+1. `src/loop.rs` (`2854 LOC`, `61 tests`)  
+   Strength: highly tested.  
+   Risk: broad change surface and dense control flow.
+
+2. `src/stats.rs` (`1530 LOC`, `32 tests`)  
+   Strength: strong compatibility logic and output formatting coverage.  
+   Risk: continued output-contract growth can drift without strict contract discipline.
 
 ---
 
 ## 5. Priority Findings (Ordered)
 
-1. **Maintainability hotspot in `loop.rs`**
-- Impact: high (future regressions and change cost)
-- Recommended direction: continue behavior-preserving pure helper extraction with targeted table tests.
+1. **Orchestration concentration in `loop.rs` (high)**  
+   Continue extracting pure decision helpers and keeping side effects locally explicit.
 
-2. **Observability contract depth is improving but still shallow for automation consumers**
-- Impact: medium-high
-- Recommended direction: add explicit contract tests for JSON output and richer machine-usable counters while preserving compatibility defaults.
+2. **Request/usage observability precision edge (medium-high)**  
+   Current request-count implementation should be hardened for all pre/post-LLM failure boundaries to fully enforce the documented request semantics under every terminal path.
 
-3. **Large-repo effectiveness remains constrained by context/edit contract limits**
-- Impact: medium-high
-- Recommended direction: postpone major feature expansion, but prepare extraction and measurement groundwork before patch-mode changes.
+3. **CLI stdout/stderr contract hardening depth (medium)**  
+   Lifecycle messaging and JSON/human output are improved, but command-level contract integration coverage should be expanded.
 
-4. **Provider monoculture**
-- Impact: medium
-- Recommended direction: defer until orchestration surface is further reduced and telemetry clarity improves.
+4. **Large-repo context relevance and edit precision (medium)**  
+   Improve signal-to-noise/context targeting before broad edit-contract expansion.
 
----
-
-## 6. AI-Research Perspective
-
-From an applied-agent research standpoint, Tod currently demonstrates a strong constrained-agent architecture:
-- LLM intent generation is separated from deterministic execution.
-- Safety is enforced by hard validation and typed errors.
-- Artifacts provide a basis for reproducibility and postmortem analysis.
-
-High-value next research/engineering crossover:
-1. Better measurement surfaces (request-level + stage-level observability).
-2. Repeatable benchmark fixtures for "goal -> plan -> edits -> outcome" quality drift tracking.
-3. Structured failure taxonomy that can be consumed by automation and future adaptive policies.
+5. **Provider monoculture (medium, strategic)**  
+   Defer until orchestration and observability surfaces are further stabilized.
 
 ---
 
-## 7. Recommended Next-Phase Direction
+## 6. Recommended Phase 18 Direction
 
-Phase 17 should prioritize **operational depth over feature breadth**:
-1. Expand observability fidelity and contract testing.
-2. Continue safe orchestration decomposition.
-3. Preserve all compatibility and safety invariants.
-4. Keep explicit room for pending UX requirements to be integrated without re-scoping core safety work.
-
-This keeps momentum practical and defensible while avoiding premature feature-surface expansion.
+Phase 18 should prioritize **observability integrity and operator control**, not broad feature expansion:
+1. Harden request-count/usage accounting invariants under all error paths.
+2. Provide precise per-run failure log pointers without weakening typed errors.
+3. Add explicit output-control ergonomics (quiet/progress policy) while preserving stdout contracts.
+4. Expand contract tests for command-level stdout/stderr behavior and machine-readable stability.
+5. Keep compatibility-first defaults and safety boundaries unchanged.

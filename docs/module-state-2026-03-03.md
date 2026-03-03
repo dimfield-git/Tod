@@ -1,64 +1,67 @@
-# Module State Review (2026-03-03, Post-Phase 16)
+# Module State Review (2026-03-03, Post-Phase 17)
 
-Date: 2026-03-03
-Scope: full module-by-module review of `src/` against current behavior
-Reviewer posture: senior software engineering + applied agent reliability
+Date: 2026-03-03  
+Scope: full module-by-module review of `src/` against current behavior  
+Reviewer posture: senior software engineering + applied-agent reliability
 
 Validation baseline:
-- `cargo test`: **203 passed, 1 ignored, 0 failed**
+- `cargo test`: **215 passed, 1 ignored, 0 failed**
 - `cargo clippy -- -D warnings`: **clean**
 
 ## Executive Summary
 
-Tod’s module health is solid overall:
+Module health is strong overall:
 - Safety and compatibility invariants remain intact.
-- Phase 16 delivered operator-facing usability gains without destabilizing runtime logic.
-- The main structural risk remains concentrated in `src/loop.rs` size/centrality.
+- Phase 17 materially improved operator-facing behavior and observability contracts.
+- Structural risk remains concentrated in `src/loop.rs` (size + orchestration centrality).
 
 ## Snapshot Table
 
 | Module | LOC | Test count | State | Notes |
 |---|---:|---:|---|---|
-| `src/main.rs` | 237 | 4 | Stable | Dispatch now supports JSON output routing for status/stats. |
-| `src/cli.rs` | 292 | 10 | Stable | `status`/`stats` now include `--json`; parsing coverage present. |
+| `src/main.rs` | 281 | 4 | Stable | Startup banners, enriched success output, failure log pointer, stdout/stderr contract separation. |
+| `src/cli.rs` | 310 | 10 | Stable | Operational help text expanded; parse behavior unchanged and covered. |
 | `src/config.rs` | 91 | 2 | Stable | Immutable config contract remains clean. |
-| `src/context.rs` | 470 | 9 | Stable | Budgeted context assembly remains deterministic. |
-| `src/planner.rs` | 274 | 11 | Stable | Strict semantic plan validation remains a strength. |
-| `src/editor.rs` | 220 | 8 | Stable | Typed bridge from model output to schema-validated edits. |
-| `src/schema.rs` | 747 | 28 | Strong | Core safety boundary; broad regression coverage. |
-| `src/runner.rs` | 645 | 19 | Strong | Transactional apply and deterministic pipeline staging. |
-| `src/reviewer.rs` | 167 | 9 | Stable | Small deterministic retry/abort policy layer. |
-| `src/llm.rs` | 425 | 15 | Stable | Provider abstraction + retry semantics are bounded. |
-| `src/log_schema.rs` | 99 | 1 | Stable | Pure schema/serde module boundary preserved. |
-| `src/loop_io.rs` | 185 | 4 | Stable | Persistence and run-id boundary remains clean. |
-| `src/loop.rs` | 2561 | 56 | Watch | Robust, heavily tested, but still the primary complexity hotspot. |
-| `src/stats.rs` | 1269 | 25 | Stable+ | Now supports human + JSON output with compatibility-aware summarization. |
-| `src/util.rs` | 49 | 3 | Stable | Focused utility helpers, low risk. |
+| `src/context.rs` | 470 | 9 | Stable | Deterministic context building with budget enforcement remains intact. |
+| `src/planner.rs` | 274 | 11 | Stable | Strict plan validation remains a strength. |
+| `src/editor.rs` | 220 | 8 | Stable | Typed model->batch bridge remains constrained by schema validation. |
+| `src/schema.rs` | 747 | 28 | Strong | Core safety boundary with broad regression coverage. |
+| `src/runner.rs` | 645 | 19 | Strong | Transactional apply + deterministic pipeline staging remain robust. |
+| `src/reviewer.rs` | 167 | 9 | Stable | Small deterministic proceed/retry/abort policy layer. |
+| `src/llm.rs` | 425 | 15 | Stable | Provider abstraction and retry behavior remain bounded. |
+| `src/log_schema.rs` | 99 | 1 | Stable | Pure schema/serde boundary preserved. |
+| `src/loop_io.rs` | 185 | 4 | Stable | Persistence/run-id boundary remains clean and best-effort. |
+| `src/loop.rs` | 2854 | 61 | Watch | High coverage and improved extraction, but still primary complexity hotspot. |
+| `src/stats.rs` | 1530 | 32 | Stable+ | Strong output-contract and compatibility coverage; growing contract surface. |
+| `src/util.rs` | 49 | 3 | Stable | Focused utility helpers, low change risk. |
 | `src/test_util.rs` | 43 | 0 | Stable | Temp sandbox helper remains fit-for-purpose. |
 
 ---
 
-## Phase-16 Delta by Module
+## Phase-17 Delta by Module
 
 ### `src/loop.rs`
-- Added dirty-workspace pre-run helper (`git status --porcelain`) with non-blocking warning behavior.
-- Added pure cap-check helpers (`check_iteration_cap`, `check_token_cap`).
-- Added focused regression tests for dirty-workspace and cap-helper logic.
-- Net: better maintainability and workflow safety with preserved orchestration semantics.
-
-### `src/cli.rs`
-- Added `--json` flags for `status` and `stats` command variants.
-- Updated parser tests for new command surface.
+- Added pure decision helpers (`review_handling`, terminal-outcome mapping, step progression helpers).
+- Added lifecycle progress messaging (step/attempt/review/resume) on stderr.
+- Added actionable error guidance in `LoopError::Display`.
+- Expanded `LoopReport` with run-level tokens/requests/log path.
+- Added helper-table tests and guidance/report regression coverage.
 
 ### `src/main.rs`
-- Added dispatch branching for human vs JSON stats/status formatting.
+- Added startup banner/dry-run banner (stderr).
+- Added enriched success output (`tokens`, `requests`, `logs`).
+- Added coarse failure pointer (`tod: logs at .tod/logs/`) for run/resume errors.
 
 ### `src/stats.rs`
-- Added compact JSON formatter functions for single-run and multi-run summaries.
-- Added tests validating JSON parseability and key presence.
+- Added JSON contract-key stability tests.
+- Added human-format contract stability tests.
+- Added edge-outcome and legacy-compatibility regression tests.
+
+### `src/cli.rs`
+- Added explicit operational help text for cap/strict/dry-run/resume/json options.
 
 ### Docs/runtime surface
-- Added operator runbook (`docs/runbook.md`) and Phase 16 implementation log.
+- Added machine-readable output contract docs and Phase 17 implementation log.
 
 ---
 
@@ -66,36 +69,35 @@ Tod’s module health is solid overall:
 
 ## `src/main.rs`
 State: stable.
-- Concern remains low; entrypoint behavior is explicit and test-backed.
+- Runtime output behavior is clearer and still keeps stdout clean for data output.
 
 ## `src/cli.rs`
 State: stable.
-- CLI surface is growing but still coherent; conversion logic remains predictable.
+- Surface area growth remains controlled and parse coverage remains strong.
 
 ## `src/config.rs`
 State: stable.
-- No immediate risks; keep immutable configuration contract unchanged.
+- No immediate concerns; immutable configuration remains straightforward.
 
 ## `src/context.rs`
 State: stable.
-- Deterministic, budget-aware context remains good.
-- Future candidate: relevance improvements for larger repos.
+- Deterministic and budget-aware; future large-repo relevance tuning remains a candidate.
 
 ## `src/planner.rs`
 State: stable.
-- Validation strictness should be preserved.
+- Validation strictness remains appropriate and should be preserved.
 
 ## `src/editor.rs`
 State: stable.
-- Error typing and schema validation boundary remain sound.
+- Typed error surface and schema gate remain well-scoped.
 
 ## `src/schema.rs`
 State: strong.
-- Continues to be the core execution guardrail.
+- Continues to be the central execution guardrail.
 
 ## `src/runner.rs`
 State: strong.
-- Transactional semantics and static runner stages are appropriate.
+- Transactional semantics and rollback behavior are critical strengths.
 
 ## `src/reviewer.rs`
 State: stable.
@@ -103,53 +105,55 @@ State: stable.
 
 ## `src/llm.rs`
 State: stable.
-- Retry accounting model remains coherent.
-- Single-provider limitation remains strategic, not immediate correctness risk.
+- Retry behavior is explicit; provider monoculture is strategic, not immediate correctness risk.
 
 ## `src/log_schema.rs`
 State: stable.
-- Boundaries are clean and should stay pure data/serde.
+- Boundary remains clean data+serde only.
 
 ## `src/loop_io.rs`
 State: stable.
-- Best-effort write semantics and atomic checkpoint pattern remain intact.
+- Best-effort writes and atomic checkpoint semantics remain intact.
 
 ## `src/loop.rs`
 State: watch.
-- Test coverage is strong.
-- Maintenance risk remains due to combined orchestration responsibilities.
-- Continue incremental extraction of pure decision logic in future phases.
+- Coverage is high and recent decomposition helped.
+- Still the primary change-risk surface due to orchestration density.
 
 ## `src/stats.rs`
 State: stable+.
-- JSON output enables better machine consumption.
-- Next step should be contract hardening and richer observability, not broad redesign.
+- Output contracts are much better protected.
+- Continued growth warrants disciplined contract-version awareness.
 
 ## `src/util.rs`, `src/test_util.rs`
 State: stable.
-- Keep minimal.
+- Minimal, focused, low risk.
 
 ---
 
 ## Risk Register (Current)
 
-1. `loop.rs` centrality and size
-- Severity: high
-- Mitigation: continue behavior-preserving pure extraction and targeted tests.
+1. `loop.rs` size/centrality  
+   Severity: high  
+   Mitigation: continue pure-helper extraction and table-test coverage.
 
-2. Context/edit scaling in larger codebases
-- Severity: medium-high
-- Mitigation: improve context relevance and observability before major edit-contract expansion.
+2. Request/usage accounting precision on all terminal paths  
+   Severity: medium-high  
+   Mitigation: harden request-count invariants with explicit tests around pre/post-LLM failure paths.
 
-3. Provider monoculture
-- Severity: medium
-- Mitigation: defer until orchestration and telemetry surfaces are further stabilized.
+3. CLI output contract drift (stdout/stderr interplay)  
+   Severity: medium  
+   Mitigation: add command-level integration contract tests for human/JSON modes.
+
+4. Context/edit scaling in larger codebases  
+   Severity: medium-high  
+   Mitigation: improve context relevance and deterministic change summarization before major edit-contract expansion.
 
 ---
 
-## Recommended Phase-17 Module Focus
+## Recommended Phase-18 Module Focus
 
-1. `src/loop.rs`: additional pure-helper extraction for terminal-path decision points.
-2. `src/stats.rs`: strengthen machine-readable contract stability and coverage.
-3. `src/loop_io.rs` + `src/log_schema.rs`: preserve compatibility guarantees while improving observability write-path clarity.
-4. Reserve explicit integration points for UX requirements that will be provided later.
+1. `src/loop.rs`: accounting integrity hardening + additional extraction of pure decisions.
+2. `src/main.rs`: output-policy controls (`--quiet` behavior) and precise failure guidance handoff.
+3. `src/stats.rs`: command-contract integration coverage and compatibility confidence expansion.
+4. `src/loop_io.rs` + `src/log_schema.rs`: keep compatibility defaults stable while enabling more precise run-level observability pointers.

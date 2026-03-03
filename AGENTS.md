@@ -34,7 +34,7 @@ Platform assumptions:
 
 Current phase state:
 - Phases 1-17 complete
-- Phase 18 planned
+- Phase 18 planned (see `PHASE18.md`)
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -152,6 +152,7 @@ Request counting semantics:
 | 15 | Loop surface reduction + compatibility hardening | Done |
 | 16 | Operator usability + workflow safety | Done |
 | 17 | Observability fidelity + orchestration maintainability + operator UX | Done |
+| 18 | Observability integrity + operator control + output contract reliability | Planned |
 
 ## Phase 15 Outcomes
 
@@ -220,10 +221,22 @@ Locked decisions retained in implementation:
 - No changes to path safety, transactional apply/rollback semantics, or compatibility defaults.
 - No new feature-surface expansions (patch mode, provider expansion, git worktree orchestration, or quiet-mode flag).
 
-## Phase 18 Priority Handoff
+## Phase 18 Scope (Planned)
 
-Priority candidates:
-1. Add optional `--quiet` / structured progress channel controls while preserving stderr/stdout contracts.
-2. Thread precise `run_id` context through failure surfaces for exact per-run log pointers in top-level command errors.
-3. Expand request/usage observability with explicit retry counters/latency metrics that remain separate from request-count semantics.
-4. Evaluate post-run file-change summaries that remain deterministic and avoid coupling to VCS availability.
+Primary objective:
+- Harden observability and accounting integrity introduced in Phase 17.
+- Improve operator control over lifecycle output without breaking stdout contracts.
+- Continue behavior-preserving orchestration maintainability work.
+
+Locked deliverables:
+1. **Accounting invariant hardening**: isolate and verify request/token accounting transitions under all terminal paths.
+2. **Precise failure log pointers**: improve run/resume error guidance with exact per-run log location when available.
+3. **Lifecycle output control**: add `--quiet` for run/resume to suppress cosmetic progress messages only.
+4. **Command output contract tests**: protect stdout/stderr behavior for human and `--json` modes.
+5. **Orchestration extraction**: continue pure-helper decomposition in `loop.rs` without semantic drift.
+
+Design decisions locked for Phase 18:
+- No patch mode, provider expansion, or git worktree orchestration engine this phase.
+- `--quiet` must never suppress errors; it only gates cosmetic lifecycle messages.
+- Stdout remains clean for command output and machine-readable JSON payloads.
+- Request counting semantics remain strict: one logical plan/edit LLM call equals one request.

@@ -1,8 +1,9 @@
-# Tod Strategic Plan (Post-Phase 16)
+# Tod Strategic Plan (Post-Phase 17)
 
 Date: 2026-03-03
+
 Baseline validated on current tree:
-- `cargo test`: **203 passed, 1 ignored**
+- `cargo test`: **215 passed, 1 ignored**
 - `cargo clippy -- -D warnings`: **clean**
 
 ---
@@ -11,46 +12,50 @@ Baseline validated on current tree:
 
 Evolve Tod from a strong prototype into a dependable daily Rust maintenance agent with:
 1. constrained deterministic execution,
-2. high compatibility confidence,
-3. operator-grade observability and workflow safety.
+2. compatibility-first artifact behavior,
+3. operator-grade observability and control,
+4. predictable automation-facing contracts.
 
 Near-term objective:
-- deepen reliability and maintainability,
-- improve machine-usable and operator-usable observability,
-- defer broad feature-surface expansion until core loop complexity is reduced further.
+- deepen observability integrity and control surfaces,
+- continue reducing orchestration change risk,
+- defer broad capability expansion until core loop/accounting confidence is higher.
 
 ---
 
-## 2. Current Position (After Phase 16)
+## 2. Current Position (After Phase 17)
 
 What is now true:
-- Phase 16 usability/safety deliverables are complete.
-- Operator runbook and mode guidance exist.
-- Dirty-workspace warning protects real workflow awareness without blocking runs.
-- JSON output for `status`/`stats` exists for automation consumers.
+- Phase 17 outcomes are complete (observability hardening, lifecycle messaging, actionable errors, enriched completion output, CLI help improvements).
+- Compatibility and safety invariants remain intact.
+- Operator-facing run behavior is significantly more transparent.
 
-What remains the main risk:
-- `src/loop.rs` orchestration concentration and long-term change blast radius.
+Primary residual risk:
+- `src/loop.rs` remains a central orchestration hotspot, now also carrying richer lifecycle and accounting responsibilities.
+
+Secondary risk:
+- Request/usage observability semantics require stricter enforcement under all terminal and pre-LLM failure paths.
 
 ---
 
 ## 3. Path Options From Here
 
-### Path A: Reliability + Observability Depth (recommended)
-- Continue behavior-preserving orchestration extraction.
-- Strengthen stats/output contract tests and operational telemetry quality.
-- Keep compatibility invariants strict.
+### Path A: Observability Integrity + Operator Control (recommended)
+- Strengthen request/usage accounting invariants and command-level output contracts.
+- Add precise failure-location guidance (`run_id`/log path fidelity).
+- Add controlled lifecycle-output ergonomics (`--quiet` or equivalent policy) without breaking stdout contracts.
+- Continue behavior-preserving `loop.rs` extraction.
 
 ### Path B: Capability expansion first
 - Add patch-mode/provider expansion immediately.
-- Higher upside, higher regression risk while orchestration complexity remains concentrated.
+- Upside exists, but regression risk is elevated while orchestration and accounting surfaces are still concentrated.
 
 ### Path C: Distribution-first
-- Push packaging/adoption before deeper internals hardening.
-- Risks exposing rough edges to wider users prematurely.
+- Prioritize packaging/adoption now.
+- Risks exposing avoidable operator and automation sharp edges.
 
 Recommendation:
-- Execute Path A for Phase 17, then reassess capability expansion.
+- Execute Path A for Phase 18, then re-evaluate capability expansion.
 
 ---
 
@@ -60,62 +65,63 @@ Recommendation:
 
 | Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Continue `loop.rs` surface reduction (pure-helper extractions) | Lower regression risk and review complexity | Medium | M | `loop.rs`, tests |
-| Strengthen observability contracts (human + JSON stability) | Better operator trust and automation safety | Low-Med | S-M | `stats.rs`, CLI/tests/docs |
-| Preserve compatibility constraints with explicit regression checks | Prevent legacy artifact drift | Medium | S-M | `stats.rs`, `loop_io.rs`, tests |
-| Define UX integration seam for future input | Enables later UX improvements without rework | Low | S | docs + phase planning |
+| Enforce request-count/usage invariants under all run paths | Trustworthy telemetry and budgeting | Medium | M | `loop.rs`, tests, docs |
+| Add precise per-run failure log pointers | Faster operator recovery | Low-Med | M | `loop.rs`, `main.rs`, docs |
+| Expand stdout/stderr contract tests for CLI flows | Prevent automation regressions | Low-Med | M | tests, `main.rs`, `stats.rs` |
+| Continue `loop.rs` pure-helper extraction | Lower maintenance blast radius | Medium | M | `loop.rs`, tests |
 
 ## Should
 
 | Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Add richer run-level telemetry summaries | Better root-cause and trend analysis | Medium | M | `stats.rs`, log artifacts |
-| Add additional contract tests for terminal outcomes and JSON keys | Reduce accidental output drift | Low | S-M | tests |
+| Add optional lifecycle-output suppression policy (`--quiet`) | Better scripting ergonomics | Low-Med | S-M | `cli.rs`, `main.rs`, `loop.rs` |
+| Add deterministic post-run touched-file summary (no VCS dependency) | Better operator outcome visibility | Medium | M | `runner.rs`/`loop.rs`/logs/tests |
 
-## Deferred (Post-Phase 17)
+## Deferred (Post-Phase 18)
 
 | Item | Reason deferred |
 |---|---|
-| Patch/diff edit contract | Higher behavior-surface risk; better after loop/stats hardening. |
-| Multi-provider expansion | Better after telemetry and orchestration simplification. |
-| Git worktree orchestration engine | Product-surface expansion, not immediate reliability priority. |
+| Patch/diff edit contract | Wider behavioral surface; defer until observability/control hardening completes. |
+| Multi-provider expansion | Better after stable telemetry/comparison surfaces exist. |
+| Git worktree orchestration engine | Strategic product expansion, not immediate reliability priority. |
 
 ---
 
-## 5. Proposed Roadmap
+## 5. Roadmap
 
-## Phase 17 (next): Observability Fidelity + Orchestration Maintainability
+## Phase 18 (next): Observability Integrity + Operator Control
 
 Primary outcomes:
-1. Improve machine-consumable observability and contract confidence.
-2. Continue small, behavior-preserving decomposition of orchestration logic.
-3. Keep all safety and compatibility invariants intact.
-4. Reserve an explicit UX input slot for requirements to be supplied later.
+1. Request/usage accounting semantics are reliable and test-proven under all error/terminal paths.
+2. Failure messages and CLI output provide precise, actionable per-run log guidance.
+3. Lifecycle-output behavior is operator-controllable without violating stdout contracts.
+4. `loop.rs` decision logic continues to shrink through pure extraction and targeted table tests.
+5. Command-level output contracts (stdout JSON/human + stderr lifecycle/error) are protected by integration tests.
 
 Definition of done:
 - Quality gates clean.
-- No compatibility regression for legacy artifacts/checkpoints.
-- Output contract behavior (human + JSON) documented and test-protected.
+- Existing compatibility defaults preserved.
+- Contract tests cover command-level output behavior and accounting semantics.
 
-## Phase 18 (candidate): Precision and Scale Improvements
-
-Candidate outcomes:
-1. Context relevance improvements for larger repos.
-2. Measured reduction in broad rewrite patterns.
-3. Potential preparation work for future patch-mode contract.
-
-## Phase 19 (candidate): Backend Flexibility
+## Phase 19 (candidate): Large-Repo Precision and Edit Granularity
 
 Candidate outcomes:
-1. Provider optionality.
-2. Operational docs for backend selection.
-3. Telemetry consistency across providers.
+1. Better context relevance selection and reduced broad rewrites.
+2. Deterministic file-change summaries and larger-repo benchmark fixtures.
+3. Preparation for future patch-mode introduction.
+
+## Phase 20 (candidate): Backend Flexibility
+
+Candidate outcomes:
+1. Provider optionality with consistent usage/request telemetry semantics.
+2. Backend operational docs and compatibility expectations.
 
 ---
 
 ## 6. Decision Summary
 
-Tod is now robust enough that the highest ROI is disciplined operational depth, not rapid feature breadth.
+Tod is ready for another reliability-focused phase.
 
 Recommended immediate direction:
-- Phase 17 should reinforce observability and maintainability while preserving strict safety/compatibility guarantees, and should include reserved room for UX requirements to be integrated once supplied.
+- Prioritize Phase 18 observability/accounting integrity and operator control.
+- Defer major feature-surface expansion until those contracts are hardened and stable.
