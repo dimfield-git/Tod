@@ -4,8 +4,8 @@ Tod is a minimal Rust coding agent that plans work with an LLM, generates JSON e
 
 Core design principle: LLM generates intent; deterministic Rust code constrains execution.
 
-- [Tod Architecture Map](docs/webpages/tod-architecture-map_v1.0.html)
-- [Tod Architecture Map — Alternative Edition](docs/webpages/tod-mindmap_v1.1.html)
+- [Tod Architecture Map](https://dimfield-git.github.io/Tod/webpages/tod-architecture-map_v1.0.html)
+- [Tod Architecture Map — Alternative Edition](https://dimfield-git.github.io/Tod/webpages/tod-mindmap_v1.1.html)
 
 ## Current Status
 
