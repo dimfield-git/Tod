@@ -14,7 +14,7 @@
 ## Definition of Done
 
 A change is complete only when:
-- `cargo test` passes (baseline: **203 passed, 1 ignored**)
+- `cargo test` passes (baseline: **215 passed, 1 ignored**)
 - `cargo clippy -- -D warnings` is clean
 - behavior and docs are aligned for any changed runtime surface
 
@@ -33,8 +33,8 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1-16 complete
-- Phase 17 in progress
+- Phases 1-17 complete
+- Phase 18 planned
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -55,7 +55,7 @@ src/
   llm.rs          LLM provider trait + Anthropic implementation + retries
   log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog) -- pure data + serde
   loop_io.rs      persistence primitives, run identity allocation, best-effort JSON writers
-  loop.rs         orchestration state machine + checkpointing + resume
+  loop.rs         orchestration state machine + checkpointing + resume + LoopReport emission
   stats.rs        read-only run/log summarization and formatting
   util.rs         shared warning + UTF-8-safe preview helper
   test_util.rs    shared temp sandbox helper (tests only)
@@ -115,6 +115,8 @@ Workflow safety invariants:
 - `run()` emits an informational dirty-workspace warning to stderr when the target project has uncommitted git changes. This warning is non-blocking -- it never prevents a run.
 - The dirty-workspace check is silent when git is unavailable or the project is not a git repo.
 - The dirty-workspace check does not apply to `resume` (fingerprint check covers drift) or `--dry-run` (no mutation).
+- Lifecycle progress messages are stderr-only cosmetic output (`eprintln!`): best-effort, non-blocking, and never allowed to affect control flow, return values, or exit codes.
+- Stdout remains clean for command output and `--json` machine-readable output.
 
 Request counting semantics:
 - A request is one logical LLM intent: one plan call = 1 request, one edit call = 1 request.
@@ -149,7 +151,7 @@ Request counting semantics:
 | 14 | Observability/schema cohesion and metrics fidelity | Done |
 | 15 | Loop surface reduction + compatibility hardening | Done |
 | 16 | Operator usability + workflow safety | Done |
-| 17 | Observability fidelity + orchestration maintainability + operator UX | In progress |
+| 17 | Observability fidelity + orchestration maintainability + operator UX | Done |
 
 ## Phase 15 Outcomes
 
@@ -202,3 +204,26 @@ Design decisions locked for Phase 17:
 - `LoopReport` field additions are backward-compatible (internal struct, not serialized).
 - Do not thread `run_id` through error types this phase.
 - No major new features (no patch mode, no provider expansion, no git worktree engine).
+
+## Phase 17 Outcomes
+
+Completed outcomes:
+- Hardened observability contracts: explicit JSON contract tests for `status --json` and `stats --json`, plus stable human-format coverage for core summary output.
+- Added compatibility regression coverage for legacy/defaulted log fields and edge outcomes (`plan_error`, `token_cap`, `cap_reached`, `aborted`).
+- Further reduced `loop.rs` decision-surface with pure helper extraction and table tests (terminal outcome mapping, review handling, step progression).
+- Added lifecycle progress messaging to stderr across startup, planning, per-step/per-attempt transitions, review outcomes, and resume confirmation.
+- Upgraded operator-facing errors with actionable guidance in `LoopError::Display`.
+- Enriched completion output with run-level token/request usage and log path reporting via extended `LoopReport`.
+- Improved CLI discoverability with operationally explicit help text for cap/strict/dry-run/resume/json flags.
+
+Locked decisions retained in implementation:
+- No changes to path safety, transactional apply/rollback semantics, or compatibility defaults.
+- No new feature-surface expansions (patch mode, provider expansion, git worktree orchestration, or quiet-mode flag).
+
+## Phase 18 Priority Handoff
+
+Priority candidates:
+1. Add optional `--quiet` / structured progress channel controls while preserving stderr/stdout contracts.
+2. Thread precise `run_id` context through failure surfaces for exact per-run log pointers in top-level command errors.
+3. Expand request/usage observability with explicit retry counters/latency metrics that remain separate from request-count semantics.
+4. Evaluate post-run file-change summaries that remain deterministic and avoid coupling to VCS availability.

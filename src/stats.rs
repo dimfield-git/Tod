@@ -715,6 +715,17 @@ mod tests {
         .unwrap();
     }
 
+    fn sorted_json_keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys = value
+            .as_object()
+            .expect("json object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
     #[test]
     fn summarize_run_success() {
         let sandbox = TempSandbox::new();
@@ -1265,5 +1276,255 @@ mod tests {
         assert_eq!(parsed["runs_total"], 5);
         assert_eq!(parsed["runs_edit_error"], 1);
         assert!(parsed.get("most_common_failure_stage").is_some());
+    }
+
+    #[test]
+    fn format_run_summary_json_contract_keys_are_stable() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "goal".to_string(),
+            outcome: RunOutcome::Aborted,
+            terminal_message: Some("manual abort".to_string()),
+            steps_completed: 0,
+            steps_aborted: 1,
+            total_attempts: 2,
+            attempts_per_step: vec![2],
+            failure_stages: vec![("test".to_string(), 2)],
+            input_tokens: 20,
+            output_tokens: 10,
+            total_tokens: 30,
+            llm_requests_total: 3,
+            llm_requests_plan: 1,
+            llm_requests_edit: 2,
+        };
+
+        let parsed: serde_json::Value = serde_json::from_str(&format_run_summary_json(&summary)).unwrap();
+        let keys = sorted_json_keys(&parsed);
+        let expected = vec![
+            "attempts_per_step".to_string(),
+            "failure_stages".to_string(),
+            "goal".to_string(),
+            "input_tokens".to_string(),
+            "llm_requests_edit".to_string(),
+            "llm_requests_plan".to_string(),
+            "llm_requests_total".to_string(),
+            "outcome".to_string(),
+            "output_tokens".to_string(),
+            "run_id".to_string(),
+            "steps_aborted".to_string(),
+            "steps_completed".to_string(),
+            "terminal_message".to_string(),
+            "total_attempts".to_string(),
+            "total_tokens".to_string(),
+        ];
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn format_multi_run_summary_json_contract_keys_are_stable() {
+        let summary = MultiRunSummary {
+            runs_total: 4,
+            runs_succeeded: 0,
+            runs_aborted: 1,
+            runs_cap_reached: 1,
+            runs_token_cap: 1,
+            runs_edit_error: 0,
+            runs_apply_error: 0,
+            runs_plan_error: 1,
+            avg_attempts: 1.5,
+            avg_tokens: 42.0,
+            most_common_failure_stage: Some(("build".to_string(), 2)),
+        };
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&format_multi_run_summary_json(&summary)).unwrap();
+        let keys = sorted_json_keys(&parsed);
+        let expected = vec![
+            "avg_attempts".to_string(),
+            "avg_tokens".to_string(),
+            "most_common_failure_stage".to_string(),
+            "runs_aborted".to_string(),
+            "runs_apply_error".to_string(),
+            "runs_cap_reached".to_string(),
+            "runs_edit_error".to_string(),
+            "runs_plan_error".to_string(),
+            "runs_succeeded".to_string(),
+            "runs_token_cap".to_string(),
+            "runs_total".to_string(),
+        ];
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn format_run_summary_human_contract_is_stable() {
+        let summary = RunSummary {
+            run_id: "r1".to_string(),
+            goal: "goal".to_string(),
+            outcome: RunOutcome::Aborted,
+            terminal_message: Some("manual abort".to_string()),
+            steps_completed: 0,
+            steps_aborted: 1,
+            total_attempts: 2,
+            attempts_per_step: vec![2],
+            failure_stages: vec![("test".to_string(), 2)],
+            input_tokens: 20,
+            output_tokens: 10,
+            total_tokens: 30,
+            llm_requests_total: 3,
+            llm_requests_plan: 1,
+            llm_requests_edit: 2,
+        };
+
+        let rendered = format_run_summary(&summary);
+        let expected = concat!(
+            "Run:        r1\n",
+            "Goal:       goal\n",
+            "Outcome:    aborted\n",
+            "Progress:   0/1 steps completed, 1 aborted\n",
+            "Attempts:   2 total (step 0: 2)\n",
+            "Failures:   test (2)\n",
+            "Terminal:   manual abort\n",
+            "Logs:       .tod/logs/r1/\n",
+            "Tokens:     20 in / 10 out (3 requests: 1 plan, 2 edit)"
+        );
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn format_multi_run_summary_human_contract_is_stable() {
+        let summary = MultiRunSummary {
+            runs_total: 4,
+            runs_succeeded: 0,
+            runs_aborted: 1,
+            runs_cap_reached: 1,
+            runs_token_cap: 1,
+            runs_edit_error: 0,
+            runs_apply_error: 0,
+            runs_plan_error: 1,
+            avg_attempts: 2.3,
+            avg_tokens: 123.0,
+            most_common_failure_stage: Some(("clippy".to_string(), 4)),
+        };
+
+        let rendered = format_multi_run_summary(&summary);
+        let expected = concat!(
+            "Last 4 runs:\n",
+            "  Succeeded: 0  Aborted: 1  Cap reached: 1  Token cap: 1  Plan error: 1\n",
+            "  Avg attempts: 2.3\n",
+            "  Avg tokens: 123\n",
+            "  Most common failure: clippy (4 occurrences)"
+        );
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn edge_outcomes_render_consistently_in_human_and_json_formats() {
+        let outcomes = [
+            RunOutcome::PlanError,
+            RunOutcome::TokenCap,
+            RunOutcome::CapReached,
+            RunOutcome::Aborted,
+        ];
+        for outcome in outcomes {
+            let summary = RunSummary {
+                run_id: "edge".to_string(),
+                goal: "goal".to_string(),
+                outcome,
+                terminal_message: Some("terminal".to_string()),
+                steps_completed: 0,
+                steps_aborted: usize::from(outcome == RunOutcome::Aborted),
+                total_attempts: 1,
+                attempts_per_step: vec![1],
+                failure_stages: vec![],
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                llm_requests_total: 1,
+                llm_requests_plan: 1,
+                llm_requests_edit: 0,
+            };
+
+            let outcome_text = outcome.to_string();
+            let human = format_run_summary(&summary);
+            assert!(human.contains(&format!("Outcome:    {outcome_text}")));
+            let parsed: serde_json::Value =
+                serde_json::from_str(&format_run_summary_json(&summary)).unwrap();
+            assert_eq!(parsed["outcome"], outcome_text);
+        }
+
+        let multi = MultiRunSummary {
+            runs_total: 4,
+            runs_succeeded: 0,
+            runs_aborted: 1,
+            runs_cap_reached: 1,
+            runs_token_cap: 1,
+            runs_edit_error: 0,
+            runs_apply_error: 0,
+            runs_plan_error: 1,
+            avg_attempts: 1.0,
+            avg_tokens: 0.0,
+            most_common_failure_stage: None,
+        };
+        let human = format_multi_run_summary(&multi);
+        assert!(human.contains("Aborted: 1"));
+        assert!(human.contains("Cap reached: 1"));
+        assert!(human.contains("Token cap: 1"));
+        assert!(human.contains("Plan error: 1"));
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&format_multi_run_summary_json(&multi)).unwrap();
+        assert_eq!(parsed["runs_aborted"], 1);
+        assert_eq!(parsed["runs_cap_reached"], 1);
+        assert_eq!(parsed["runs_token_cap"], 1);
+        assert_eq!(parsed["runs_plan_error"], 1);
+    }
+
+    #[test]
+    fn summarize_run_legacy_attempt_missing_runner_stage_uses_default() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260303_030000";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+        write_plan(&run_dir, run_id, "legacy runner stage", 1);
+        let legacy_attempt = json!({
+            "run_id": run_id,
+            "step_index": 0,
+            "attempt": 1,
+            "timestamp_utc": "2026-03-03T03:00:00Z",
+            "run_mode": "default",
+            "edit_batch": {"edits": []},
+            "runner_output": {"ok": false, "output": "legacy payload", "truncated": false},
+            "review_decision": "abort"
+        });
+        fs::write(
+            run_dir.join("step_0_attempt_1.json"),
+            serde_json::to_string_pretty(&legacy_attempt).unwrap(),
+        )
+        .unwrap();
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.outcome, RunOutcome::Aborted);
+        assert_eq!(summary.failure_stages, vec![("review".to_string(), 1)]);
+    }
+
+    #[test]
+    fn summarize_run_plan_error_without_message_defaults_cleanly() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260303_031500";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+        fs::create_dir_all(&run_dir).unwrap();
+        let legacy_final = json!({
+            "run_id": run_id,
+            "timestamp_utc": "2026-03-03T03:15:00Z",
+            "outcome": "plan_error"
+        });
+        fs::write(
+            run_dir.join("final.json"),
+            serde_json::to_string_pretty(&legacy_final).unwrap(),
+        )
+        .unwrap();
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.outcome, RunOutcome::PlanError);
+        assert!(summary.terminal_message.is_none());
     }
 }

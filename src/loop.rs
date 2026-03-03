@@ -281,6 +281,10 @@ impl RunState {
         LoopReport {
             steps_completed: self.steps_completed,
             total_iterations: self.total_iterations,
+            input_tokens: self.usage.input_tokens,
+            output_tokens: self.usage.output_tokens,
+            llm_requests: self.llm_requests,
+            log_dir: self.log_dir.clone(),
         }
     }
 
@@ -388,6 +392,10 @@ impl RunState {
 pub struct LoopReport {
     pub steps_completed: usize,
     pub total_iterations: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub llm_requests: u64,
+    pub log_dir: String,
 }
 
 #[derive(Debug)]
@@ -431,17 +439,88 @@ pub enum LoopError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewHandling {
+    decision: &'static str,
+    step_succeeded: bool,
+    retry_context: Option<String>,
+    abort_reason: Option<String>,
+}
+
+fn review_handling(decision: ReviewDecision) -> ReviewHandling {
+    match decision {
+        ReviewDecision::Proceed => ReviewHandling {
+            decision: "proceed",
+            step_succeeded: true,
+            retry_context: None,
+            abort_reason: None,
+        },
+        ReviewDecision::Retry { error_context } => ReviewHandling {
+            decision: "retry",
+            step_succeeded: false,
+            retry_context: Some(error_context),
+            abort_reason: None,
+        },
+        ReviewDecision::Abort { reason } => ReviewHandling {
+            decision: "abort",
+            step_succeeded: false,
+            retry_context: None,
+            abort_reason: Some(reason),
+        },
+    }
+}
+
+fn terminal_outcome_for_error(err: &LoopError) -> Option<&'static str> {
+    match err {
+        LoopError::Plan(_) => Some("plan_error"),
+        LoopError::Edit { .. } => Some("edit_error"),
+        LoopError::Apply { .. } => Some("apply_error"),
+        LoopError::Aborted { .. } => Some("aborted"),
+        LoopError::TotalIterationCap { .. } => Some("cap_reached"),
+        LoopError::TokenCapExceeded { .. } => Some("token_cap"),
+        LoopError::Io { .. }
+        | LoopError::InvalidPlanPath { .. }
+        | LoopError::NoCheckpoint
+        | LoopError::FingerprintMismatch { .. } => None,
+    }
+}
+
+fn final_attempt_for_attempt_counter(attempt: usize) -> Option<usize> {
+    (attempt > 0).then_some(attempt)
+}
+
+fn next_step_progress(step_index: usize, steps_completed: usize) -> (usize, usize) {
+    (step_index + 1, steps_completed + 1)
+}
+
+fn run_mode_label(mode: RunMode) -> &'static str {
+    match mode {
+        RunMode::Default => "default",
+        RunMode::Strict => "strict",
+    }
+}
+
+fn preview_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let mut iter = input.char_indices();
+    let Some((cutoff, _)) = iter.nth(max_chars) else {
+        return input.to_string();
+    };
+    format!("{}...", crate::util::safe_preview(input, cutoff))
+}
+
 impl std::fmt::Display for LoopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Plan(e) => write!(f, "plan failed: {e}"),
+            Self::Plan(e) => {
+                write!(f, "plan failed: {e} -- check goal phrasing and project structure")
+            }
             Self::Edit {
                 step_index,
                 iteration,
                 source,
             } => write!(
                 f,
-                "edit creation failed (step {}, iteration {}): {source}",
+                "edit creation failed (step {}, iteration {}): {source} -- review the attempt log in .tod/logs/",
                 step_index + 1,
                 iteration
             ),
@@ -451,7 +530,7 @@ impl std::fmt::Display for LoopError {
                 source,
             } => write!(
                 f,
-                "edit application failed (step {}, iteration {}): {source}",
+                "edit application failed (step {}, iteration {}): {source} -- workspace may need manual inspection; check .tod/logs/",
                 step_index + 1,
                 iteration
             ),
@@ -473,16 +552,23 @@ impl std::fmt::Display for LoopError {
                 path.display()
             ),
             Self::Aborted { step_index, reason } => {
-                write!(f, "run aborted at step {}: {reason}", step_index + 1)
+                write!(
+                    f,
+                    "run aborted at step {}: {reason} -- check .tod/logs/ for failure details",
+                    step_index + 1
+                )
             }
             Self::TotalIterationCap {
                 max_total_iterations,
             } => write!(
                 f,
-                "reached total iteration cap: {max_total_iterations}"
+                "reached total iteration cap: {max_total_iterations} -- try increasing --max-iters or narrowing the goal"
             ),
             Self::TokenCapExceeded { used, cap } => {
-                write!(f, "token budget exceeded: used {used} tokens, cap was {cap}")
+                write!(
+                    f,
+                    "token budget exceeded: used {used} tokens, cap was {cap} -- try increasing --max-tokens or reducing step count"
+                )
             }
             Self::NoCheckpoint => write!(f, "no .tod/state.json found — nothing to resume"),
             Self::FingerprintMismatch {
@@ -593,17 +679,18 @@ pub fn run(
     };
 
     let mut state = RunState::new(goal.to_string(), plan, config);
+    state.llm_requests += 1;
+    eprintln!("tod: plan ready -- {} step(s)", state.plan.steps.len());
     if let Some(usage) = &plan_usage {
         state.usage.accumulate(usage);
-        state.llm_requests += 1;
     }
     if let Some(err) = check_token_cap(&state) {
         state.checkpoint(config);
         state.write_final_log(
             config,
-            "token_cap",
+            terminal_outcome_for_error(&err).expect("token cap outcome"),
             Some(state.step_index),
-            None,
+            final_attempt_for_attempt_counter(state.step_state.attempt),
             Some(err.to_string()),
         );
         return Err(err);
@@ -655,6 +742,10 @@ fn run_from_state(
 ) -> Result<LoopReport, LoopError> {
     while state.step_index < state.plan.steps.len() {
         let step = state.plan.steps[state.step_index].clone();
+        let step_label = state.step_index + 1;
+        let total_steps = state.plan.steps.len();
+        let step_description = preview_with_ellipsis(&step.description, 80);
+        eprintln!("tod: step {step_label}/{total_steps}: {step_description}");
         let mut step_succeeded = false;
 
         while state.step_state.attempt < state.max_iterations_per_step {
@@ -664,9 +755,9 @@ fn run_from_state(
                 state.checkpoint(config);
                 state.write_final_log(
                     config,
-                    "cap_reached",
+                    terminal_outcome_for_error(&err).expect("cap reached outcome"),
                     Some(state.step_index),
-                    (state.step_state.attempt > 0).then_some(state.step_state.attempt),
+                    final_attempt_for_attempt_counter(state.step_state.attempt),
                     Some(err.to_string()),
                 );
                 return Err(err);
@@ -674,6 +765,11 @@ fn run_from_state(
 
             state.step_state.attempt += 1;
             state.total_iterations += 1;
+            eprintln!(
+                "tod: step {step_label}/{total_steps}: attempt {}/{}",
+                state.step_state.attempt, state.max_iterations_per_step
+            );
+            state.llm_requests += 1;
 
             // --- Build file context, append retry feedback if present ---
             let mut file_context =
@@ -710,7 +806,7 @@ fn run_from_state(
                         state.checkpoint(config);
                         state.write_final_log(
                             config,
-                            "edit_error",
+                            terminal_outcome_for_error(&err).expect("edit error outcome"),
                             Some(state.step_index),
                             Some(state.step_state.attempt),
                             Some(err.to_string()),
@@ -720,14 +816,13 @@ fn run_from_state(
                 };
             if let Some(usage) = &call_usage {
                 state.usage.accumulate(usage);
-                state.llm_requests += 1;
             }
             if let Some(err) = check_token_cap(state) {
                 state.refresh_fingerprint(&config.project_root);
                 state.checkpoint(config);
                 state.write_final_log(
                     config,
-                    "token_cap",
+                    terminal_outcome_for_error(&err).expect("token cap outcome"),
                     Some(state.step_index),
                     Some(state.step_state.attempt),
                     Some(err.to_string()),
@@ -756,7 +851,7 @@ fn run_from_state(
                     state.checkpoint(config);
                     state.write_final_log(
                         config,
-                        "apply_error",
+                        terminal_outcome_for_error(&err).expect("apply error outcome"),
                         Some(state.step_index),
                         Some(state.step_state.attempt),
                         Some(err.to_string()),
@@ -767,59 +862,63 @@ fn run_from_state(
             };
 
             // --- Review and update step state ---
-            match review(
+            let handling = review_handling(review(
                 &run_result,
                 state.step_state.attempt,
                 state.max_iterations_per_step,
-            ) {
-                ReviewDecision::Proceed => {
-                    step_succeeded = true;
-                    state.write_attempt_log(
-                        config,
-                        &batch,
-                        &run_result,
-                        "proceed",
-                        call_usage.clone(),
-                    );
-                    state.refresh_fingerprint(&config.project_root);
-                    state.checkpoint(config);
-                    break;
-                }
-                ReviewDecision::Retry { error_context } => {
-                    state.write_attempt_log(
-                        config,
-                        &batch,
-                        &run_result,
-                        "retry",
-                        call_usage.clone(),
-                    );
-                    state.step_state.retry_context = Some(error_context);
-                    state.refresh_fingerprint(&config.project_root);
-                    state.checkpoint(config);
-                }
-                ReviewDecision::Abort { reason } => {
-                    state.write_attempt_log(
-                        config,
-                        &batch,
-                        &run_result,
-                        "abort",
-                        call_usage.clone(),
-                    );
-                    state.refresh_fingerprint(&config.project_root);
-                    state.checkpoint(config);
-                    let err = LoopError::Aborted {
-                        step_index: state.step_index,
-                        reason,
+            ));
+            match handling.decision {
+                "proceed" => eprintln!(
+                    "tod: step {step_label}/{total_steps}: attempt {} -- passed",
+                    state.step_state.attempt
+                ),
+                "retry" => {
+                    let stage = match &run_result {
+                        RunResult::Failure { stage, .. } => stage.as_str(),
+                        RunResult::Success => "review",
                     };
-                    state.write_final_log(
-                        config,
-                        "aborted",
-                        Some(state.step_index),
-                        Some(state.step_state.attempt),
-                        Some(err.to_string()),
+                    eprintln!(
+                        "tod: step {step_label}/{total_steps}: attempt {} -- retrying ({} failed)",
+                        state.step_state.attempt, stage
                     );
-                    return Err(err);
                 }
+                "abort" => eprintln!(
+                    "tod: step {step_label}/{total_steps}: attempt {} -- aborted",
+                    state.step_state.attempt
+                ),
+                _ => {}
+            }
+            state.write_attempt_log(
+                config,
+                &batch,
+                &run_result,
+                handling.decision,
+                call_usage.clone(),
+            );
+            if let Some(error_context) = handling.retry_context {
+                state.step_state.retry_context = Some(error_context);
+            }
+            state.refresh_fingerprint(&config.project_root);
+            state.checkpoint(config);
+
+            if let Some(reason) = handling.abort_reason {
+                let err = LoopError::Aborted {
+                    step_index: state.step_index,
+                    reason,
+                };
+                state.write_final_log(
+                    config,
+                    terminal_outcome_for_error(&err).expect("aborted outcome"),
+                    Some(state.step_index),
+                    Some(state.step_state.attempt),
+                    Some(err.to_string()),
+                );
+                return Err(err);
+            }
+
+            if handling.step_succeeded {
+                step_succeeded = true;
+                break;
             }
         }
 
@@ -832,7 +931,7 @@ fn run_from_state(
             };
             state.write_final_log(
                 config,
-                "aborted",
+                terminal_outcome_for_error(&err).expect("aborted outcome"),
                 Some(state.step_index),
                 Some(state.step_state.attempt),
                 Some(err.to_string()),
@@ -841,8 +940,10 @@ fn run_from_state(
         }
 
         // --- Advance to next step with a clean StepState ---
-        state.steps_completed += 1;
-        state.step_index += 1;
+        let (next_step_index, next_steps_completed) =
+            next_step_progress(state.step_index, state.steps_completed);
+        state.steps_completed = next_steps_completed;
+        state.step_index = next_step_index;
         state.step_state = StepState::new();
 
         // Checkpoint: step completed, about to start next (or finish).
@@ -911,13 +1012,30 @@ pub fn resume(
         };
         state.write_final_log(
             &effective_config,
-            "token_cap",
+            terminal_outcome_for_error(&err).expect("token cap outcome"),
             Some(state.step_index),
-            (state.step_state.attempt > 0).then_some(state.step_state.attempt),
+            final_attempt_for_attempt_counter(state.step_state.attempt),
             Some(err.to_string()),
         );
         return Err(err);
     }
+
+    let total_steps = state.plan.steps.len();
+    let step_display = if total_steps == 0 {
+        0
+    } else {
+        usize::min(state.step_index + 1, total_steps)
+    };
+    let goal_preview = preview_with_ellipsis(&state.goal, 60);
+    let dry_run_label = if effective_config.dry_run { "on" } else { "off" };
+    eprintln!(
+        "tod: resuming \"{}\" from step {}/{} ({} mode, dry-run: {})",
+        goal_preview,
+        step_display,
+        total_steps,
+        run_mode_label(effective_config.mode),
+        dry_run_label
+    );
 
     // Continue the step loop from where we left off
     run_from_state(provider, &effective_config, &mut state)
@@ -1145,6 +1263,110 @@ mod tests {
     }
 
     #[test]
+    fn terminal_outcome_for_error_table() {
+        let cases = [
+            (
+                LoopError::Plan(PlanError::Parse("bad json".to_string())),
+                Some("plan_error"),
+            ),
+            (
+                LoopError::Edit {
+                    step_index: 0,
+                    iteration: 1,
+                    source: EditError::Parse("bad edits".to_string()),
+                },
+                Some("edit_error"),
+            ),
+            (
+                LoopError::Apply {
+                    step_index: 0,
+                    iteration: 1,
+                    source: ApplyError::Write {
+                        path: "src/main.rs".to_string(),
+                        cause: "disk full".to_string(),
+                    },
+                },
+                Some("apply_error"),
+            ),
+            (
+                LoopError::Aborted {
+                    step_index: 0,
+                    reason: "failed".to_string(),
+                },
+                Some("aborted"),
+            ),
+            (
+                LoopError::TotalIterationCap {
+                    max_total_iterations: 5,
+                },
+                Some("cap_reached"),
+            ),
+            (
+                LoopError::TokenCapExceeded { used: 11, cap: 10 },
+                Some("token_cap"),
+            ),
+            (
+                LoopError::Io {
+                    path: PathBuf::from(".tod/state.json"),
+                    kind: io::ErrorKind::NotFound,
+                    message: "missing".to_string(),
+                },
+                None,
+            ),
+            (LoopError::NoCheckpoint, None),
+        ];
+
+        for (err, expected) in &cases {
+            assert_eq!(terminal_outcome_for_error(err), *expected);
+        }
+    }
+
+    #[test]
+    fn review_handling_table() {
+        let proceed = review_handling(ReviewDecision::Proceed);
+        assert_eq!(proceed.decision, "proceed");
+        assert!(proceed.step_succeeded);
+        assert!(proceed.retry_context.is_none());
+        assert!(proceed.abort_reason.is_none());
+
+        let retry = review_handling(ReviewDecision::Retry {
+            error_context: "test failed".to_string(),
+        });
+        assert_eq!(retry.decision, "retry");
+        assert!(!retry.step_succeeded);
+        assert_eq!(retry.retry_context.as_deref(), Some("test failed"));
+        assert!(retry.abort_reason.is_none());
+
+        let abort = review_handling(ReviewDecision::Abort {
+            reason: "max retries".to_string(),
+        });
+        assert_eq!(abort.decision, "abort");
+        assert!(!abort.step_succeeded);
+        assert!(abort.retry_context.is_none());
+        assert_eq!(abort.abort_reason.as_deref(), Some("max retries"));
+    }
+
+    #[test]
+    fn final_attempt_for_attempt_counter_table() {
+        let cases = [(0usize, None), (1usize, Some(1usize)), (3usize, Some(3usize))];
+        for (attempt, expected) in cases {
+            assert_eq!(final_attempt_for_attempt_counter(attempt), expected);
+        }
+    }
+
+    #[test]
+    fn next_step_progress_increments_both_counters() {
+        let cases = [
+            (0usize, 0usize, (1usize, 1usize)),
+            (1usize, 1usize, (2usize, 2usize)),
+            (2usize, 1usize, (3usize, 2usize)),
+        ];
+        for (step_index, steps_completed, expected) in cases {
+            assert_eq!(next_step_progress(step_index, steps_completed), expected);
+        }
+    }
+
+    #[test]
     fn dry_run_completes_plan() {
         let sandbox = TempSandbox::with_main_rs();
 
@@ -1180,6 +1402,67 @@ mod tests {
             message: "missing".to_string(),
         };
         assert_eq!(err.to_string(), "I/O error for .tod/state.json: missing");
+    }
+
+    #[test]
+    fn loop_error_display_includes_actionable_guidance() {
+        let cases = vec![
+            (
+                LoopError::Plan(PlanError::Parse("bad json".to_string())),
+                "plan failed:",
+                "check goal phrasing and project structure",
+            ),
+            (
+                LoopError::Edit {
+                    step_index: 0,
+                    iteration: 1,
+                    source: EditError::Parse("bad edit json".to_string()),
+                },
+                "edit creation failed (step 1, iteration 1):",
+                "review the attempt log in .tod/logs/",
+            ),
+            (
+                LoopError::Apply {
+                    step_index: 0,
+                    iteration: 1,
+                    source: ApplyError::Write {
+                        path: "src/main.rs".to_string(),
+                        cause: "read-only fs".to_string(),
+                    },
+                },
+                "edit application failed (step 1, iteration 1):",
+                "workspace may need manual inspection; check .tod/logs/",
+            ),
+            (
+                LoopError::Aborted {
+                    step_index: 0,
+                    reason: "test failed".to_string(),
+                },
+                "run aborted at step 1: test failed",
+                "check .tod/logs/ for failure details",
+            ),
+            (
+                LoopError::TotalIterationCap {
+                    max_total_iterations: 25,
+                },
+                "reached total iteration cap: 25",
+                "try increasing --max-iters or narrowing the goal",
+            ),
+            (
+                LoopError::TokenCapExceeded {
+                    used: 1200,
+                    cap: 1000,
+                },
+                "token budget exceeded: used 1200 tokens, cap was 1000",
+                "try increasing --max-tokens or reducing step count",
+            ),
+        ];
+
+        for (err, original_fragment, guidance_fragment) in cases {
+            let rendered = err.to_string();
+            assert!(rendered.contains(original_fragment));
+            assert!(rendered.contains(guidance_fragment));
+        }
     }
 
     #[test]
@@ -1701,10 +1984,20 @@ mod tests {
         let mut rs = RunState::new("goal".into(), plan, &config);
         rs.steps_completed = 3;
         rs.total_iterations = 7;
+        rs.usage = Usage {
+            input_tokens: 700,
+            output_tokens: 300,
+        };
+        rs.llm_requests = 9;
+        rs.log_dir = ".tod/logs/test_run".to_string();
 
         let report = rs.report();
         assert_eq!(report.steps_completed, 3);
         assert_eq!(report.total_iterations, 7);
+        assert_eq!(report.input_tokens, 700);
+        assert_eq!(report.output_tokens, 300);
+        assert_eq!(report.llm_requests, 9);
+        assert_eq!(report.log_dir, ".tod/logs/test_run");
     }
 
     #[test]

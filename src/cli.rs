@@ -38,19 +38,34 @@ pub enum Command {
         project: PathBuf,
 
         /// Use strict mode (fmt + clippy + test).
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Run fmt --check, clippy -D warnings, and test each attempt (slower, stricter)"
+        )]
         strict: bool,
 
         /// Max fix iterations per plan step.
-        #[arg(long, default_value_t = 5, value_parser = parse_max_iters)]
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = parse_max_iters,
+            help = "Max fix iterations per plan step (total cap = this x 5)"
+        )]
         max_iters: usize,
 
         /// Validate and log edits without writing to disk.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Validate and log edits without writing to disk or running cargo"
+        )]
         dry_run: bool,
 
         /// Max total tokens (input + output) for the entire run. 0 = no limit.
-        #[arg(long, default_value_t = 0)]
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Max total tokens (input + output) for the entire run. 0 = no limit"
+        )]
         max_tokens: u64,
     },
 
@@ -61,7 +76,10 @@ pub enum Command {
         project: PathBuf,
 
         /// Continue even if workspace fingerprint has changed.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Continue even if workspace has changed since last checkpoint"
+        )]
         force: bool,
     },
 
@@ -72,7 +90,7 @@ pub enum Command {
         project: PathBuf,
 
         /// Emit machine-readable JSON output.
-        #[arg(long)]
+        #[arg(long, help = "Output as single-line JSON for tooling")]
         json: bool,
     },
 
@@ -87,7 +105,7 @@ pub enum Command {
         last: usize,
 
         /// Emit machine-readable JSON output.
-        #[arg(long)]
+        #[arg(long, help = "Output as single-line JSON for tooling")]
         json: bool,
     },
 }

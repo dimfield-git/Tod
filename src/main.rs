@@ -21,7 +21,15 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::cli::{Cli, Command};
+use crate::config::RunMode;
 use crate::llm::AnthropicProvider;
+
+fn run_mode_label(mode: RunMode) -> &'static str {
+    match mode {
+        RunMode::Default => "default",
+        RunMode::Strict => "strict",
+    }
+}
 
 fn main() {
     let cli = Cli::parse();
@@ -41,15 +49,43 @@ fn main() {
                 }
             };
 
+            if config.dry_run {
+                eprintln!(
+                    "tod: dry-run mode on {} (no filesystem writes)",
+                    config.project_root.display()
+                );
+            } else {
+                let token_cap_description = if config.max_tokens == 0 {
+                    "no token cap".to_string()
+                } else {
+                    format!("max {} tokens", config.max_tokens)
+                };
+                eprintln!(
+                    "tod: running in {} mode on {} (max {} iters/step, {})",
+                    run_mode_label(config.mode),
+                    config.project_root.display(),
+                    config.max_iterations_per_step,
+                    token_cap_description
+                );
+            }
+
             match r#loop::run(&provider, &goal, &config) {
                 Ok(report) => {
                     println!(
                         "completed {} step(s) in {} iteration(s)",
                         report.steps_completed, report.total_iterations
                     );
+                    if report.input_tokens > 0 || report.output_tokens > 0 {
+                        println!(
+                            "  tokens: {} in / {} out ({} requests)",
+                            report.input_tokens, report.output_tokens, report.llm_requests
+                        );
+                    }
+                    println!("  logs: {}/", report.log_dir);
                 }
                 Err(e) => {
                     eprintln!("run failed: {e}");
+                    eprintln!("tod: logs at .tod/logs/");
                     std::process::exit(1);
                 }
             }
@@ -81,9 +117,17 @@ fn main() {
                         "completed {} step(s) in {} iteration(s)",
                         report.steps_completed, report.total_iterations
                     );
+                    if report.input_tokens > 0 || report.output_tokens > 0 {
+                        println!(
+                            "  tokens: {} in / {} out ({} requests)",
+                            report.input_tokens, report.output_tokens, report.llm_requests
+                        );
+                    }
+                    println!("  logs: {}/", report.log_dir);
                 }
                 Err(e) => {
                     eprintln!("resume failed: {e}");
+                    eprintln!("tod: logs at .tod/logs/");
                     std::process::exit(1);
                 }
             }

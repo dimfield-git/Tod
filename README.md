@@ -6,8 +6,8 @@ Core design principle: LLM generates intent; deterministic Rust code constrains 
 
 ## Current Status
 
-- Phases 1-16 complete
-- Baseline validation: `cargo test` (`203 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
+- Phases 1-17 complete
+- Baseline validation: `cargo test` (`215 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
 
 ## Requirements
 
@@ -33,6 +33,8 @@ cargo run -- status --project ./myproject --json
 cargo run -- stats --project ./myproject --last 5
 cargo run -- stats --project ./myproject --last 5 --json
 ```
+
+During `run`/`resume`, Tod emits lifecycle progress to stderr (startup, plan, step/attempt/review, resume confirmation). Stdout remains reserved for command output and `--json` payloads.
 
 ## Commands
 

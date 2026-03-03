@@ -54,3 +54,33 @@ Practical rule:
    - Action: rerun first; if repeated, simplify goal wording and constrain changed files.
 6. `apply_error`
    - Action: inspect target paths/ranges in logs; reconcile local file drift, then rerun (or `resume --force` only if drift is intentional).
+
+Actionable runtime errors:
+- `run`/`resume` failures include operator guidance in the error text.
+- CLI failures also print `tod: logs at .tod/logs/` to direct inspection quickly.
+
+## Machine-Readable Output
+
+Use JSON mode for scripting and dashboards:
+- `tod status --json` prints exactly one JSON object on stdout.
+- `tod stats --json` prints exactly one JSON object on stdout.
+- Human progress/warnings/errors remain on stderr; do not parse stderr as data.
+
+`tod status --json` contract fields:
+- `run_id`, `goal`, `outcome`, `terminal_message`
+- `steps_completed`, `steps_aborted`, `total_attempts`
+- `attempts_per_step`, `failure_stages`
+- `input_tokens`, `output_tokens`, `total_tokens`
+- `llm_requests_total`, `llm_requests_plan`, `llm_requests_edit`
+
+`tod stats --json` contract fields:
+- `runs_total`, `runs_succeeded`, `runs_aborted`, `runs_cap_reached`
+- `runs_token_cap`, `runs_edit_error`, `runs_apply_error`, `runs_plan_error`
+- `avg_attempts`, `avg_tokens`, `most_common_failure_stage`
+
+Outcome values are stable:
+- `success`, `aborted`, `cap_reached`, `token_cap`, `edit_error`, `apply_error`, `plan_error`
+
+Compatibility notes:
+- Legacy runs without `final.json` are still summarized via fallback heuristics.
+- Planner failures (`plan_error`) can be summarized even when `plan.json` is absent.
