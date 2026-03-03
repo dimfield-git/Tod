@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tod — Interactive Mechanics Map (Modules • Control Flow • Data Flow)</title>
+<style>
+  :root{
+    --bg:#0b0f14;
+    --panel:#0f1620;
+    --card:#121b27;
+    --text:#e7eef7;
+    --muted:#9fb0c3;
+    --line:#2a3a4f;
+    --accent:#6ee7ff;
+    --accent2:#b6ff6e;
+    --warn:#ffcc66;
+    --bad:#ff6e7a;
+    --good:#7dff9a;
+    --shadow: 0 10px 30px rgba(0,0,0,.35);
+    --radius: 16px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  }
+
+  /* Themes */
+  body.theme-dark-oxide{
+    --bg:#101722; --panel:#162132; --card:#1b2a40; --text:#e7eef7; --muted:#9fb0c3;
+    --line:#2a3a4f; --accent:#6ee7ff; --accent2:#b6ff6e; --warn:#ffcc66; --bad:#ff6e7a; --good:#7dff9a;
+  }
+  body.theme-dark-ember{
+    --bg:#161115; --panel:#1e171c; --card:#241c22; --text:#f4ecef; --muted:#c7b4bd;
+    --line:#3c2b33; --accent:#ffb86b; --accent2:#ff6ee7; --warn:#ffd36e; --bad:#ff6e7a; --good:#6effc8;
+  }
+  body.theme-light-paper{
+    --bg:#f6f2ea; --panel:#fbf8f2; --card:#ffffff; --text:#1f2937; --muted:#566579;
+    --line:#d9dde6; --accent:#2563eb; --accent2:#059669; --warn:#b45309; --bad:#b91c1c; --good:#047857;
+    --shadow: 0 10px 30px rgba(2,6,23,.10);
+  }
+  body.theme-light-sky{
+    --bg:#eef6ff; --panel:#f6fbff; --card:#ffffff; --text:#0f172a; --muted:#475569;
+    --line:#cfe2ff; --accent:#0ea5e9; --accent2:#22c55e; --warn:#f59e0b; --bad:#ef4444; --good:#16a34a;
+    --shadow: 0 10px 30px rgba(2,6,23,.12);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    font-family:var(--sans);
+    background: radial-gradient(1200px 900px at 15% -10%, rgba(110,231,255,.18), transparent 55%),
+                radial-gradient(1000px 700px at 90% 0%, rgba(182,255,110,.12), transparent 55%),
+                var(--bg);
+    color:var(--text);
+  }
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 18px;
+    position:sticky; top:0; z-index:10;
+    backdrop-filter: blur(10px);
+    background: color-mix(in oklab, var(--bg) 70%, transparent);
+    border-bottom:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  }
+  .title{ display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  .title h1{ font-size:16px; margin:0; letter-spacing:.2px; }
+  .title .sub{ font-family:var(--mono); font-size:12px; color:var(--muted); }
+  .controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  select, input[type="search"], button{
+    border:1px solid color-mix(in oklab, var(--line) 80%, transparent);
+    background: color-mix(in oklab, var(--panel) 85%, transparent);
+    color:var(--text);
+    border-radius:12px;
+    padding:9px 10px;
+    font-size:12px;
+    outline:none;
+  }
+  button{
+    cursor:pointer;
+    transition: transform .08s ease, background .15s ease, border-color .15s ease;
+  }
+  button:hover{ transform: translateY(-1px); border-color: color-mix(in oklab, var(--accent) 35%, var(--line)); }
+  button:active{ transform: translateY(0px); }
+  .chip{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:7px 10px;
+    border-radius:999px;
+    border:1px solid color-mix(in oklab, var(--line) 80%, transparent);
+    background: color-mix(in oklab, var(--panel) 80%, transparent);
+    font-size:12px;
+    user-select:none;
+  }
+  .chip input{ accent-color: var(--accent); }
+  main{
+    display:grid;
+    grid-template-columns: 360px 1fr;
+    gap:14px;
+    padding:14px;
+  }
+  @media (max-width: 980px){ main{ grid-template-columns: 1fr; } }
+  .panel{
+    background: color-mix(in oklab, var(--panel) 92%, transparent);
+    border:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow:hidden;
+  }
+  .panel .hd{
+    padding:12px 14px;
+    border-bottom:1px solid color-mix(in oklab, var(--line) 65%, transparent);
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+  }
+  .panel .hd .h{ font-size:13px; font-weight:650; letter-spacing:.15px; }
+  .panel .bd{ padding:12px 14px; }
+  .kv{
+    display:grid;
+    grid-template-columns: 120px 1fr;
+    gap:8px 10px;
+    font-size:12px;
+    line-height:1.35;
+  }
+  .k{ color:var(--muted); font-family:var(--mono); }
+  .v{ color:var(--text); }
+  .v code{
+    font-family:var(--mono);
+    font-size:11px;
+    padding:2px 6px;
+    border-radius:10px;
+    border:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+    background: color-mix(in oklab, var(--card) 85%, transparent);
+  }
+  .hr{ height:1px; background: color-mix(in oklab, var(--line) 65%, transparent); margin:12px 0; }
+  .pill{ display:inline-flex; gap:8px; flex-wrap:wrap; }
+  .tag{
+    font-family:var(--mono);
+    font-size:11px;
+    padding:4px 8px;
+    border-radius:999px;
+    border:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+    background: color-mix(in oklab, var(--card) 85%, transparent);
+    color:var(--text);
+  }
+  .tag.good{ border-color: color-mix(in oklab, var(--good) 45%, var(--line)); }
+  .tag.bad{ border-color: color-mix(in oklab, var(--bad) 45%, var(--line)); }
+  .tag.warn{ border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); }
+  .small{ font-size:11px; color:var(--muted); line-height:1.35; }
+  .hint{ margin-top:8px; }
+  .canvas{
+    position:relative;
+    height: calc(100vh - 92px);
+    min-height: 560px;
+    background: linear-gradient(180deg,
+      color-mix(in oklab, var(--card) 60%, transparent),
+      color-mix(in oklab, var(--panel) 90%, transparent));
+  }
+  .canvas .toolbar{
+    position:absolute; top:12px; left:12px; right:12px;
+    display:flex; gap:10px; align-items:center; justify-content:space-between;
+    z-index:5;
+  }
+  .toolbar .left, .toolbar .right{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .legend{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .swatch{ display:inline-flex; gap:8px; align-items:center; font-size:12px; color:var(--muted); }
+  .dot{
+    width:10px; height:10px; border-radius:999px; display:inline-block;
+    background: var(--line);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--panel) 90%, transparent) inset;
+  }
+  .dot.accent{ background: var(--accent); }
+  .dot.warn{ background: var(--warn); }
+  .dot.bad{ background: var(--bad); }
+  .dot.good{ background: var(--good); }
+  svg{ width:100%; height:100%; display:block; }
+  .edge{
+    stroke: color-mix(in oklab, var(--line) 85%, transparent);
+    stroke-width:1.6;
+    fill:none;
+    marker-end:url(#arrow);
+    opacity:.95;
+  }
+  .edge.cycle{ stroke: color-mix(in oklab, var(--warn) 65%, var(--line)); stroke-dasharray: 6 5; }
+  .edge.cross{ stroke: color-mix(in oklab, var(--accent) 70%, var(--line)); }
+  .edge.leak{ stroke: color-mix(in oklab, var(--bad) 75%, var(--line)); stroke-dasharray: 3 4; }
+  .edge.hidden{ opacity:.12; }
+  .edge.focus{ stroke-width: 3.0; opacity: 1; }
+  .node{ cursor:grab; transition: filter .15s ease, opacity .15s ease; }
+  .node:active{ cursor:grabbing; }
+  .node rect{
+    fill: color-mix(in oklab, var(--card) 92%, transparent);
+    stroke: color-mix(in oklab, var(--line) 85%, transparent);
+    stroke-width:1.2;
+    rx:14; ry:14;
+  }
+  .node .hdr{ font-family:var(--mono); font-size:12px; fill: var(--text); }
+  .node .sub{ font-size:11px; fill: var(--muted); }
+  .node .badge{ font-family:var(--mono); font-size:10px; fill: var(--text); }
+  .node .badge-bg{
+    fill: color-mix(in oklab, var(--panel) 55%, transparent);
+    stroke: color-mix(in oklab, var(--line) 70%, transparent);
+    stroke-width:1;
+    rx:999; ry:999;
+  }
+  .node.domain rect{ stroke: color-mix(in oklab, var(--accent2) 45%, var(--line)); }
+  .node.infra rect{ stroke: color-mix(in oklab, var(--accent) 45%, var(--line)); }
+  .node.hot rect{ stroke: color-mix(in oklab, var(--warn) 55%, var(--line)); }
+  .node.danger rect{ stroke: color-mix(in oklab, var(--bad) 55%, var(--line)); }
+  .node.selected rect{ filter: drop-shadow(0 12px 18px rgba(0,0,0,.35)); stroke: color-mix(in oklab, var(--accent) 70%, var(--line)); stroke-width:1.8; }
+  .node.dim{ opacity:.18; }
+  .tooltip{
+    position:absolute;
+    pointer-events:none;
+    padding:8px 10px;
+    border-radius:12px;
+    background: color-mix(in oklab, var(--panel) 92%, transparent);
+    border:1px solid color-mix(in oklab, var(--line) 75%, transparent);
+    color:var(--text);
+    font-size:12px;
+    max-width: 320px;
+    box-shadow: var(--shadow);
+    opacity:0;
+    transform: translateY(6px);
+    transition: opacity .12s ease, transform .12s ease;
+    z-index:10;
+  }
+  .tooltip.show{ opacity:1; transform: translateY(0px); }
+  .tooltip .t{ font-weight:650; margin-bottom:4px; }
+  .tooltip .m{ color:var(--muted); font-size:11px; line-height:1.35; }
+  .kbd{
+    font-family:var(--mono);
+    font-size:11px;
+    padding:2px 6px;
+    border-radius:10px;
+    border:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+    background: color-mix(in oklab, var(--card) 85%, transparent);
+    color:var(--text);
+  }
+
+  /* Segmented controls (top bar) */
+  .seg{
+    display:inline-flex;
+    gap:6px;
+    padding:6px;
+    border-radius:14px;
+    border:1px solid color-mix(in oklab, var(--line) 70%, transparent);
+    background: color-mix(in oklab, var(--panel) 82%, transparent);
+  }
+  .seg-btn{
+    border:1px solid transparent;
+    background: transparent;
+    color: color-mix(in oklab, var(--muted) 90%, var(--text));
+    border-radius:12px;
+    padding:8px 10px;
+    font-size:12px;
+    line-height:1;
+    cursor:pointer;
+    transition: background .15s ease, border-color .15s ease, transform .08s ease, color .15s ease;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    min-width: 44px;
+  }
+  .seg-btn:hover{
+    border-color: color-mix(in oklab, var(--accent) 25%, var(--line));
+    background: color-mix(in oklab, var(--card) 55%, transparent);
+    transform: translateY(-1px);
+    color: var(--text);
+  }
+  .seg-btn:active{ transform: translateY(0px); }
+  .seg-btn.active{
+    background: color-mix(in oklab, var(--card) 78%, transparent);
+    border-color: color-mix(in oklab, var(--accent) 35%, var(--line));
+    color: var(--text);
+  }
+
+  /* Theme dots inside seg buttons */
+  .swatchdot{
+    width:16px; height:16px;
+    border-radius:999px;
+    border:2px solid color-mix(in oklab, var(--line) 75%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--panel) 85%, transparent) inset;
+    display:inline-block;
+  }
+  .seg-btn.active .swatchdot{
+    border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
+  }
+  .swatchdot[data-dot="oxide"]{ background: #6ee7ff; }
+  .swatchdot[data-dot="ember"]{ background: #ffb86b; }
+  .swatchdot[data-dot="paper"]{ background: #2563eb; }
+  .swatchdot[data-dot="sky"]{ background: #0ea5e9; }
+
+  /* Tighten controls layout */
+  .controls{ gap:12px; }
+  input[type="search"]{ min-width: 240px; }
+
+</style>
+</head>
+<body class="theme-dark-oxide">
+<header>
+  <div class="title">
+    <h1>Tod — Interactive Mechanics Map</h1>
+    <div class="sub">Modules • Control Flow • Data Flow</div>
+  </div>
+  <div class="controls">
+    <div class="seg" id="viewSeg" role="tablist" aria-label="View">
+      <button class="seg-btn active" data-view="modules" role="tab" aria-selected="true">Dependencies</button>
+      <button class="seg-btn" data-view="control" role="tab" aria-selected="false">Control Flow</button>
+      <button class="seg-btn" data-view="data" role="tab" aria-selected="false">Data Flow</button>
+    </div>
+    <input id="search" type="search" placeholder="Search node… (e.g. loop.rs, RunState, llm)" />
+    <div class="seg" id="themeSeg" role="tablist" aria-label="Theme">
+      <button class="seg-btn active" data-theme="theme-dark-oxide" title="Dark: Oxide" aria-label="Dark Oxide">
+        <span class="swatchdot" data-dot="oxide"></span>
+      </button>
+      <button class="seg-btn" data-theme="theme-dark-ember" title="Dark: Ember" aria-label="Dark Ember">
+        <span class="swatchdot" data-dot="ember"></span>
+      </button>
+      <button class="seg-btn" data-theme="theme-light-paper" title="Light: Paper" aria-label="Light Paper">
+        <span class="swatchdot" data-dot="paper"></span>
+      </button>
+      <button class="seg-btn" data-theme="theme-light-sky" title="Light: Sky" aria-label="Light Sky">
+        <span class="swatchdot" data-dot="sky"></span>
+      </button>
+    </div>
+    <button id="resetBtn" title="Reset view">Reset</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="hd">
+      <div class="h">Inspector</div>
+      <div class="small"><span class="kbd">Click</span> select • <span class="kbd">Drag</span> move • <span class="kbd">Wheel</span> zoom</div>
+    </div>
+    <div class="bd">
+      <div id="inspectorEmpty" class="small">
+        Select a node to see: ownership, dependencies, state mutation, data transforms, and escape points.
+        <div class="hint small">Pro-tip: toggle <span class="kbd">Cycles</span> and <span class="kbd">Infra leaks</span> in the toolbar.</div>
+      </div>
+
+      <div id="inspector" style="display:none">
+        <div class="kv">
+          <div class="k">Node</div><div class="v" id="i_name"></div>
+          <div class="k">Layer</div><div class="v" id="i_layer"></div>
+          <div class="k">Ownership</div><div class="v" id="i_owner"></div>
+          <div class="k">State</div><div class="v" id="i_state"></div>
+          <div class="k">Transforms</div><div class="v" id="i_transforms"></div>
+          <div class="k">Accumulates</div><div class="v" id="i_accumulates"></div>
+          <div class="k">Escapes</div><div class="v" id="i_escapes"></div>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="small" style="margin-bottom:8px;color:var(--muted)">Incoming / Outgoing dependencies</div>
+        <div class="pill" id="i_deps"></div>
+
+        <div class="hr"></div>
+
+        <div class="small" style="margin-bottom:8px;color:var(--muted)">Notes</div>
+        <div class="small" id="i_notes"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel canvas">
+    <div class="toolbar">
+      <div class="left">
+        <label class="chip"><input id="toggleCycles" type="checkbox" checked />Cycles</label>
+        <label class="chip"><input id="toggleCross" type="checkbox" checked />Cross-layer</label>
+        <label class="chip"><input id="toggleLeaks" type="checkbox" checked />Infra leaks</label>
+        <label class="chip"><input id="toggleOnlyFocus" type="checkbox" />Only focus edges</label>
+      </div>
+      <div class="right legend" aria-label="Legend">
+        <span class="swatch"><span class="dot accent"></span> Cross-layer</span>
+        <span class="swatch"><span class="dot warn"></span> Cycle</span>
+        <span class="swatch"><span class="dot bad"></span> Infra leaking into domain</span>
+        <span class="swatch"><span class="dot good"></span> Domain-ish core</span>
+      </div>
+    </div>
+
+    <div id="tooltip" class="tooltip">
+      <div class="t" id="ttTitle"></div>
+      <div class="m" id="ttMeta"></div>
+    </div>
+
+    <svg id="svg" viewBox="0 0 1600 900" role="img" aria-label="Interactive graph">
+      <defs>
+        <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+          <path d="M0,0 L12,6 L0,12 Z" fill="currentColor"></path>
+        </marker>
+      </defs>
+      <g id="viewport"></g>
+    </svg>
+  </section>
+</main>
+
+<script>
+/**
+ * Tod mechanics map
+ * - No external deps; uses SVG + basic zoom/pan + drag nodes
+ * - Three views: modules, control, data
+ */
+
+const GRAPHS = {
+  modules: {
+    title: "Module Dependency Graph",
+    nodes: [
+      N("main", "main.rs", "CLI entrypoint + reporting", "ui", "normal", 160, 90, 250, 84,
+        "main.rs", "No persistent state", "Formats LoopReport → stdout", "—", "stdout/stderr", "Thin entry; should stay dumb.",
+        ["ui","cli"]),
+      N("cli", "cli.rs", "Args → RunConfig", "ui", "normal", 160, 210, 250, 84,
+        "cli.rs", "No persistent state", "Args → config", "—", "—", "Parsing and command routing.",
+        ["ui","cli"]),
+      N("loop", "loop.rs", "Orchestration brain", "domain", "hot", 540, 140, 300, 100,
+        "loop.rs", "RunState (mutable)", "Drives plan→edit→review→apply", "Attempts, tokens, requests", "Writes logs/checkpoints", "Largest blast radius; hidden state mutation lives here.",
+        ["hot","orchestrator"]),
+      N("planner", "planner.rs", "Plan generation", "domain", "normal", 940, 80, 260, 84,
+        "planner.rs", "Stateless", "Goal+ctx → plan.json", "—", "Plan JSON", "LLM boundary for plan stage.",
+        ["llm","planner"]),
+      N("editor", "editor.rs", "Edit generation", "domain", "normal", 940, 190, 260, 84,
+        "editor.rs", "Stateless", "Step+ctx → edits", "—", "Edits JSON", "LLM boundary for edit stage.",
+        ["llm","editor"]),
+      N("reviewer", "reviewer.rs", "Review stage", "domain", "normal", 940, 300, 260, 84,
+        "reviewer.rs", "Stateless", "Edits+ctx → accept/reject", "—", "Review JSON", "LLM boundary for review stage.",
+        ["llm","review"]),
+      N("schema", "schema.rs", "Validation + safety gate", "domain", "normal", 540, 320, 300, 92,
+        "schema.rs", "Stateless", "JSON → typed + constraints", "—", "Rejects unsafe edits", "Primary safety boundary.",
+        ["safety","schema"]),
+      N("runner", "runner.rs", "Apply edits + run commands", "infra", "danger", 540, 470, 300, 92,
+        "runner.rs", "File system mutation", "Edits → write files / run", "—", "FS + process side effects", "Infra boundary: writes to disk, runs commands.",
+        ["apply","danger"]),
+      N("context", "context.rs", "Context building", "domain", "normal", 160, 390, 250, 92,
+        "context.rs", "Reads filesystem", "Paths/files → StepContext", "Context lines", "Context object", "Where data enters from repo.",
+        ["context"]),
+      N("llm", "llm.rs", "Provider + retry + usage", "infra", "normal", 940, 420, 260, 92,
+        "llm.rs", "Provider client", "Prompts → model response", "Usage tokens", "Network / API", "Transport retries live here.",
+        ["infra","llm"]),
+      N("loopio", "loop_io.rs", "Artifacts + checkpointing", "infra", "normal", 160, 520, 250, 92,
+        "loop_io.rs", "Writes .tod/", "RunState → jsonl/final", "Logs + artifacts", "Disk", "Where state escapes to storage.",
+        ["storage"]),
+      N("stats", "stats.rs", "Stats aggregation", "domain", "normal", 160, 650, 250, 84,
+        "stats.rs", "Stateless", "Logs → aggregates", "Counts", "stdout JSON", "Reporting pipeline input.",
+        ["reporting"]),
+      N("types", "types/config", "Shared types", "domain", "normal", 540, 610, 300, 84,
+        "types", "Stateless", "Structs/enums", "—", "—", "RunConfig/RunMode/LoopReport etc.",
+        ["types"])
+    ],
+    edges: [
+      E("main","cli", { label:"uses", cross:true }),
+      E("main","loop", { label:"run/resume", cross:true }),
+      E("main","stats", { label:"stats/status", cross:true }),
+      E("cli","loop", { label:"build RunConfig" }),
+      E("loop","planner", { label:"create_plan()", cross:true }),
+      E("loop","editor", { label:"create_edits()", cross:true }),
+      E("loop","reviewer", { label:"review_edits()", cross:true }),
+      E("loop","schema", { label:"validate JSON" }),
+      E("loop","context", { label:"build_step_context()" }),
+      E("loop","runner", { label:"apply + run", leak:true }),
+      E("planner","llm", { label:"LLM call", cross:true }),
+      E("editor","llm", { label:"LLM call", cross:true }),
+      E("reviewer","llm", { label:"LLM call", cross:true }),
+      E("loop","loopio", { label:"checkpoint/log", cross:true }),
+      E("stats","loopio", { label:"read logs", cross:true }),
+      E("loopio","loop", { label:"load checkpoint", cycle:true, cross:true })
+    ]
+  },
+
+  control: {
+    title: "Control Flow Graph",
+    nodes: [
+      N("cmd", "main.rs", "Command dispatch", "ui", "normal", 170, 90, 260, 84,
+        "main.rs", "No persistent state", "Args → command", "—", "stdout/stderr", "Route to run/resume/stats/status.",
+        ["ui"]),
+      N("run", "loop::run()", "Create state → run_from_state", "domain", "hot", 520, 90, 320, 92,
+        "loop.rs", "RunState", "Init run", "—", "—", "Entry to orchestration.",
+        ["hot"]),
+      N("resume", "loop::resume()", "Load checkpoint → run_from_state", "domain", "hot", 900, 90, 320, 92,
+        "loop.rs", "RunState", "Resume", "—", "—", "Checkpoint + fingerprint gate.",
+        ["hot"]),
+      N("rfs", "run_from_state()", "Main loop", "domain", "hot", 520, 220, 700, 120,
+        "loop.rs", "Mutates RunState", "Plan→steps→attempts", "Tokens/reqs", "Writes logs", "Deep call chains + hidden state mutation live here.",
+        ["hot","branch"]),
+      N("plan", "Planner stage", "create_plan()", "domain", "normal", 260, 420, 300, 90,
+        "loop.rs/planner.rs", "Updates state.plan", "Goal+ctx→plan", "Requests/tokens", "plan.json", "Branch: plan_error vs plan_ok.",
+        ["branch"]),
+      N("step", "Step loop", "for step in plan", "domain", "normal", 640, 420, 300, 90,
+        "loop.rs", "step_state.attempt", "Iterate steps", "Attempt counter", "step log", "Branch explosion begins here.",
+        ["branch"]),
+      N("attempt", "Attempt loop", "retry edits/review", "domain", "normal", 1020, 420, 300, 90,
+        "loop.rs", "attempt + edits", "Generate edits", "Requests/tokens", "attempt log", "Deep loop: accept/reject/fix.",
+        ["branch"]),
+      N("edit", "Editor stage", "create_edits()", "domain", "normal", 900, 560, 300, 90,
+        "editor.rs/llm.rs", "No state; writes into RunState", "Prompt→edits JSON", "Usage", "edits.json", "May fail: provider, parse, schema.",
+        ["llm"]),
+      N("review", "Reviewer stage", "review_edits()", "domain", "normal", 540, 560, 300, 90,
+        "reviewer.rs/llm.rs", "No state; writes into RunState", "Edits→accept/reject", "Usage", "review.json", "Branch: accept/reject/strict fail.",
+        ["llm","branch"]),
+      N("apply", "Runner stage", "apply & run", "infra", "danger", 540, 700, 300, 92,
+        "runner.rs", "FS + proc side effects", "Edits→filesystem/process", "—", "Disk/process", "Where changes happen; biggest external effect.",
+        ["danger"]),
+      N("term", "Terminal outcomes", "success/error/cap/abort", "domain", "normal", 1020, 700, 300, 92,
+        "loop.rs/loop_io.rs", "Finalize", "Write final.json", "—", ".tod/logs/final.json", "Where data escapes; must be consistent.",
+        ["terminal"])
+    ],
+    edges: [
+      E("cmd","run", { label:"tod run", cross:true }),
+      E("cmd","resume", { label:"tod resume", cross:true }),
+      E("run","rfs", { label:"init", cross:true }),
+      E("resume","rfs", { label:"load+gate", cross:true }),
+      E("rfs","plan", { label:"planner stage" }),
+      E("plan","step", { label:"plan ok" }),
+      E("plan","term", { label:"plan_error", cross:true }),
+      E("step","attempt", { label:"enter attempt loop" }),
+      E("attempt","edit", { label:"generate edits" }),
+      E("edit","review", { label:"review candidate" }),
+      E("review","apply", { label:"accept" }),
+      E("review","attempt", { label:"reject → next attempt", cycle:true }),
+      E("apply","step", { label:"next step", cycle:true }),
+      E("rfs","term", { label:"cap_reached / aborted / errors", cross:true })
+    ]
+  },
+
+  data: {
+    title: "Data Flow Diagram",
+    nodes: [
+      N("fs", "Repo filesystem", "source files", "infra", "normal", 160, 120, 260, 92,
+        "FS", "External", "Bytes → strings", "—", "—", "Raw input to context builder.",
+        ["source"]),
+      N("ctx", "StepContext", "context.rs", "domain", "normal", 520, 120, 300, 110,
+        "context.rs", "Derived", "Files→context chunks", "Context lines", "Context object", "Where data enters; truncation/selection here.",
+        ["context"]),
+      N("prompt", "Prompt builders", "planner/editor/reviewer", "domain", "normal", 900, 120, 320, 110,
+        "planner.rs/editor.rs/reviewer.rs", "Derived", "Context→prompt", "—", "Prompt text", "Where domain→LLM boundary is shaped.",
+        ["prompt"]),
+      N("llmresp", "ModelResponse", "llm.rs", "infra", "normal", 1260, 120, 300, 110,
+        "llm.rs", "External data", "HTTP→response", "Usage tokens", "Response JSON/text", "Where tokens are reported; retries happen.",
+        ["llm"]),
+      N("planjson", "plan.json", "serialized plan", "infra", "normal", 520, 320, 300, 96,
+        "loop_io.rs", "Artifact", "Plan struct→JSON", "—", ".tod/logs/plan.json", "First durable state output.",
+        ["artifact"]),
+      N("edits", "Edits JSON", "candidate edits", "infra", "normal", 900, 320, 320, 96,
+        "loop_io.rs", "Artifact", "Edits struct→JSON", "—", ".tod/logs/attempt.json", "Candidate edits serialized.",
+        ["artifact"]),
+      N("schema", "Validated edits", "schema.rs", "domain", "normal", 900, 460, 320, 96,
+        "schema.rs", "Typed", "JSON→typed ops", "—", "—", "Where data transforms and is constrained.",
+        ["transform","safety"]),
+      N("apply", "Filesystem writes", "runner.rs", "infra", "danger", 900, 600, 320, 96,
+        "runner.rs", "External effect", "Ops→disk/proc", "—", "Repo changes", "Where data escapes into world.",
+        ["danger"]),
+      N("state", "RunState", "in-memory ledger", "domain", "hot", 520, 520, 300, 120,
+        "loop.rs", "Mutable ledger", "Accumulates usage + attempts", "tokens/reqs/attempts", "checkpoint/final", "Hidden mutation hotspot: step_state, usage, requests.",
+        ["hot","ledger"]),
+      N("jsonl", "JSONL logs", "events/attempts", "infra", "normal", 160, 520, 260, 120,
+        "loop_io.rs", "Storage", "Events→JSONL", "—", ".tod/logs/*.jsonl", "Append-only-ish history.",
+        ["storage"]),
+      N("final", "final.json", "terminal outcome", "infra", "normal", 160, 700, 260, 92,
+        "loop_io.rs", "Storage", "Report→JSON", "Totals", ".tod/logs/final.json", "Where accounting escapes and must be correct.",
+        ["storage","terminal"])
+    ],
+    edges: [
+      E("fs","ctx", { label:"read files", cross:true }),
+      E("ctx","prompt", { label:"assemble prompt" }),
+      E("prompt","llmresp", { label:"provider call", cross:true }),
+      E("llmresp","planjson", { label:"planner output", cross:true }),
+      E("llmresp","edits", { label:"editor output", cross:true }),
+      E("edits","schema", { label:"validate/parse", cross:true }),
+      E("schema","apply", { label:"apply operations", leak:true }),
+      E("llmresp","state", { label:"usage → accumulate", cross:true }),
+      E("ctx","state", { label:"context metadata", cross:true }),
+      E("planjson","state", { label:"plan stored", cross:true }),
+      E("edits","state", { label:"attempt stored", cross:true }),
+      E("state","jsonl", { label:"checkpoint/log", cross:true }),
+      E("state","final", { label:"terminal log", cross:true })
+    ]
+  }
+};
+
+function N(id, label, subtitle, layer, kind, x, y, w, h, owner, state, transforms, accumulates, escapes, notes, tags){
+  return { id, label, subtitle, layer, kind, x, y, w, h, owner, state, transforms, accumulates, escapes, notes, tags: tags || [] };
+}
+function E(from, to, meta){ return { from, to, ...(meta||{}) }; }
+function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
+
+const svg = document.getElementById("svg");
+const viewport = document.getElementById("viewport");
+const tooltip = document.getElementById("tooltip");
+const ttTitle = document.getElementById("ttTitle");
+const ttMeta = document.getElementById("ttMeta");
+
+const toggles = {
+  cycles: document.getElementById("toggleCycles"),
+  cross: document.getElementById("toggleCross"),
+  leaks: document.getElementById("toggleLeaks"),
+  onlyFocus: document.getElementById("toggleOnlyFocus")
+};
+
+let currentView = "modules";
+let graph = GRAPHS[currentView];
+let selectedId = null;
+
+let zoom = { k: 1, x: 0, y: 0 };
+let pan = { active:false, sx:0, sy:0, ox:0, oy:0 };
+
+function setTransform(){
+  viewport.setAttribute("transform", `translate(${zoom.x},${zoom.y}) scale(${zoom.k})`);
+}
+function clearViewport(){
+  while(viewport.firstChild) viewport.removeChild(viewport.firstChild);
+}
+function nodeById(id){ return graph.nodes.find(n=>n.id===id); }
+
+function buildAdjacency(){
+  const inMap = new Map(), outMap = new Map();
+  graph.nodes.forEach(n=>{ inMap.set(n.id, []); outMap.set(n.id, []); });
+  graph.edges.forEach(e=>{
+    outMap.get(e.from)?.push(e);
+    inMap.get(e.to)?.push(e);
+  });
+  return { inMap, outMap };
+}
+function edgeVisible(e){
+  if(e.cycle && !toggles.cycles.checked) return false;
+  if(e.cross && !toggles.cross.checked) return false;
+  if(e.leak && !toggles.leaks.checked) return false;
+  return true;
+}
+function edgeMetaSuffix(e){
+  const parts = [];
+  if(e.cycle) parts.push("cycle");
+  if(e.cross) parts.push("cross-layer");
+  if(e.leak) parts.push("infra leak");
+  return parts.length ? ` • ${parts.join(" • ")}` : "";
+}
+
+function render(){
+  graph = GRAPHS[currentView];
+  selectedId = null;
+  updateInspector(null);
+  clearViewport();
+
+  const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  edgeGroup.setAttribute("id","edges");
+  viewport.appendChild(edgeGroup);
+  edgeGroup.style.color = getComputedStyle(document.body).getPropertyValue('--line');
+
+  graph.edges.forEach((e, idx)=>{
+    const a = nodeById(e.from), b = nodeById(e.to);
+    if(!a || !b) return;
+
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.classList.add("edge");
+    if(e.cycle) path.classList.add("cycle");
+    if(e.cross) path.classList.add("cross");
+    if(e.leak)  path.classList.add("leak");
+    path.dataset.from = e.from;
+    path.dataset.to = e.to;
+    path.dataset.idx = String(idx);
+
+    const ax = a.x + a.w/2, ay = a.y + a.h/2;
+    const bx = b.x + b.w/2, by = b.y + b.h/2;
+    const dx = bx - ax, dy = by - ay;
+    const curve = clamp(Math.hypot(dx,dy)/5, 30, 160);
+    const cx1 = ax + dx*0.25 + (dy ? (dy/Math.abs(dy))*curve : curve)*0.35;
+    const cy1 = ay + dy*0.25 - (dx ? (dx/Math.abs(dx))*curve : curve)*0.35;
+    const cx2 = ax + dx*0.75 + (dy ? (dy/Math.abs(dy))*curve : curve)*0.20;
+    const cy2 = ay + dy*0.75 - (dx ? (dx/Math.abs(dx))*curve : curve)*0.20;
+
+    path.setAttribute("d", `M ${ax} ${ay} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${bx} ${by}`);
+    path.setAttribute("stroke", "currentColor");
+
+    path.addEventListener("mousemove", (ev)=>{
+      const meta = e.label ? e.label : "dependency";
+      showTooltip(ev.clientX, ev.clientY, `${a.label} → ${b.label}`, meta + edgeMetaSuffix(e));
+    });
+    path.addEventListener("mouseleave", hideTooltip);
+
+    edgeGroup.appendChild(path);
+  });
+
+  const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  nodeGroup.setAttribute("id","nodes");
+  viewport.appendChild(nodeGroup);
+
+  graph.nodes.forEach(n=>{
+    const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+    g.classList.add("node");
+    g.classList.add(n.layer === "infra" ? "infra" : "domain");
+    if(n.kind === "hot") g.classList.add("hot");
+    if(n.kind === "danger") g.classList.add("danger");
+    g.dataset.id = n.id;
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+
+    const rect = document.createElementNS("http://www.w3.org/2000/svg","rect");
+    rect.setAttribute("width", n.w);
+    rect.setAttribute("height", n.h);
+    g.appendChild(rect);
+
+    g.appendChild(textEl(n.w, 18, 14, n.label, "hdr"));
+    g.appendChild(textEl(n.w, 18, 36, n.subtitle, "sub"));
+
+    const badge1 = badge(18, n.h-26, n.layer.toUpperCase());
+    g.appendChild(badge1.group);
+
+    const badge2 = n.kind === "hot" ? badge(18 + badge1.w + 8, n.h-26, "HOT", "warn")
+                  : n.kind === "danger" ? badge(18 + badge1.w + 8, n.h-26, "SIDE-EFFECT", "bad")
+                  : badge(18 + badge1.w + 8, n.h-26, "OK", "good");
+    g.appendChild(badge2.group);
+
+    g.addEventListener("click", ()=> selectNode(n.id));
+    g.addEventListener("mousemove", (ev)=> showTooltip(ev.clientX, ev.clientY, n.label, n.subtitle));
+    g.addEventListener("mouseleave", hideTooltip);
+
+    attachNodeDrag(g, n);
+    nodeGroup.appendChild(g);
+  });
+
+  zoom = { k: 1, x: 0, y: 0 };
+  setTransform();
+  applyVisibility();
+}
+
+function textEl(w, x, y, str, cls){
+  const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+  t.setAttribute("x", x);
+  t.setAttribute("y", y);
+  t.classList.add(cls);
+  const max = Math.floor((w-30)/7.0);
+  const s = (str.length > max) ? (str.slice(0, Math.max(0, max-1)) + "…") : str;
+  t.textContent = s;
+  return t;
+}
+function badge(x, y, label, tint){
+  const group = document.createElementNS("http://www.w3.org/2000/svg","g");
+  group.setAttribute("transform", `translate(${x},${y})`);
+  const padX = 10;
+  const w = Math.max(44, label.length * 7 + padX*2);
+  const h = 18;
+
+  const r = document.createElementNS("http://www.w3.org/2000/svg","rect");
+  r.classList.add("badge-bg");
+  if(tint === "warn") { r.style.stroke = "color-mix(in oklab, var(--warn) 55%, var(--line))"; }
+  if(tint === "bad")  { r.style.stroke = "color-mix(in oklab, var(--bad) 55%, var(--line))"; }
+  if(tint === "good") { r.style.stroke = "color-mix(in oklab, var(--good) 55%, var(--line))"; }
+  r.setAttribute("width", w);
+  r.setAttribute("height", h);
+  group.appendChild(r);
+
+  const t = document.createElementNS("http://www.w3.org/2000/svg","text");
+  t.classList.add("badge");
+  t.setAttribute("x", padX);
+  t.setAttribute("y", 13);
+  t.textContent = label;
+  group.appendChild(t);
+
+  return { group, w, h };
+}
+
+function applyVisibility(){
+  const edges = [...viewport.querySelectorAll(".edge")];
+  edges.forEach(p=>{
+    const idx = Number(p.dataset.idx);
+    const e = graph.edges[idx];
+    const visible = edgeVisible(e);
+    p.style.display = visible ? "" : "none";
+  });
+  if(selectedId) highlightFocus(selectedId);
+  else clearFocus();
+}
+
+function clearFocus(){
+  viewport.querySelectorAll(".edge").forEach(e=> e.classList.remove("focus","hidden"));
+  viewport.querySelectorAll(".node").forEach(n=> n.classList.remove("dim","selected"));
+}
+
+function highlightFocus(id){
+  const { inMap, outMap } = buildAdjacency();
+  const incoming = new Set((inMap.get(id)||[]).map(e=>`${e.from}->${e.to}`));
+  const outgoing = new Set((outMap.get(id)||[]).map(e=>`${e.from}->${e.to}`));
+  const keepEdges = new Set([...incoming, ...outgoing]);
+
+  viewport.querySelectorAll(".edge").forEach(path=>{
+    const key = `${path.dataset.from}->${path.dataset.to}`;
+    const idx = Number(path.dataset.idx);
+    const e = graph.edges[idx];
+    const isFilteredOut = !edgeVisible(e);
+    const isKeep = keepEdges.has(key);
+
+    path.classList.toggle("focus", isKeep && !isFilteredOut);
+    const onlyFocus = toggles.onlyFocus.checked;
+    path.classList.toggle("hidden", onlyFocus ? (!isKeep || isFilteredOut) : (!isKeep && !isFilteredOut));
+  });
+
+  viewport.querySelectorAll(".node").forEach(g=>{
+    const nid = g.dataset.id;
+    g.classList.toggle("selected", nid === id);
+    const isNeighbor =
+      nid === id ||
+      (inMap.get(id)||[]).some(e=>e.from===nid) ||
+      (outMap.get(id)||[]).some(e=>e.to===nid);
+    g.classList.toggle("dim", toggles.onlyFocus.checked ? !isNeighbor : false);
+  });
+}
+
+function selectNode(id){
+  selectedId = id;
+  updateInspector(nodeById(id));
+  highlightFocus(id);
+}
+
+function updateInspector(n){
+  const empty = document.getElementById("inspectorEmpty");
+  const box = document.getElementById("inspector");
+  if(!n){
+    empty.style.display = "";
+    box.style.display = "none";
+    return;
+  }
+  empty.style.display = "none";
+  box.style.display = "";
+
+  const layerLabel = n.layer === "infra" ? "Infrastructure (side effects / IO / network)" :
+                     n.layer === "ui" ? "UI/CLI (entry + reporting)" :
+                     "Domain (core orchestration / types / validation)";
+  document.getElementById("i_name").textContent = `${n.label} — ${n.subtitle}`;
+  document.getElementById("i_layer").textContent = layerLabel;
+  document.getElementById("i_owner").innerHTML = `<code>${n.owner}</code>`;
+  document.getElementById("i_state").textContent = n.state;
+  document.getElementById("i_transforms").textContent = n.transforms;
+  document.getElementById("i_accumulates").textContent = n.accumulates;
+  document.getElementById("i_escapes").textContent = n.escapes;
+  document.getElementById("i_notes").textContent = n.notes;
+
+  const deps = document.getElementById("i_deps");
+  deps.innerHTML = "";
+
+  const { inMap, outMap } = buildAdjacency();
+  const inc = (inMap.get(n.id)||[]).filter(edgeVisible);
+  const out = (outMap.get(n.id)||[]).filter(edgeVisible);
+
+  const make = (txt, cls)=>{
+    const span = document.createElement("span");
+    span.className = `tag ${cls||""}`.trim();
+    span.textContent = txt;
+    return span;
+  };
+  deps.appendChild(make("Incoming:", "warn"));
+  if(inc.length===0) deps.appendChild(make("none"));
+  inc.forEach(e=>{
+    const src = nodeById(e.from);
+    deps.appendChild(make(`← ${src?.label||e.from}`, e.leak ? "bad" : e.cycle ? "warn" : "good"));
+  });
+  deps.appendChild(make("Outgoing:", "warn"));
+  if(out.length===0) deps.appendChild(make("none"));
+  out.forEach(e=>{
+    const dst = nodeById(e.to);
+    deps.appendChild(make(`→ ${dst?.label||e.to}`, e.leak ? "bad" : e.cycle ? "warn" : "good"));
+  });
+}
+
+function showTooltip(x,y,title,meta){
+  ttTitle.textContent = title;
+  ttMeta.textContent = meta || "";
+  tooltip.style.left = (x + 14) + "px";
+  tooltip.style.top  = (y + 14) + "px";
+  tooltip.classList.add("show");
+}
+function hideTooltip(){ tooltip.classList.remove("show"); }
+
+svg.addEventListener("wheel", (ev)=>{
+  ev.preventDefault();
+  const delta = -ev.deltaY;
+  const factor = delta > 0 ? 1.08 : 0.92;
+  const newK = clamp(zoom.k * factor, 0.45, 2.4);
+
+  const pt = svg.createSVGPoint();
+  pt.x = ev.offsetX; pt.y = ev.offsetY;
+  const ctm = viewport.getCTM();
+  const inv = ctm.inverse();
+  const p = pt.matrixTransform(inv);
+
+  zoom.x = zoom.x - (p.x * (newK - zoom.k));
+  zoom.y = zoom.y - (p.y * (newK - zoom.k));
+  zoom.k = newK;
+  setTransform();
+}, { passive:false });
+
+svg.addEventListener("mousedown", (ev)=>{
+  if(ev.target.closest && ev.target.closest(".node")) return;
+  pan.active = true;
+  pan.sx = ev.clientX; pan.sy = ev.clientY;
+  pan.ox = zoom.x; pan.oy = zoom.y;
+});
+window.addEventListener("mousemove", (ev)=>{
+  if(!pan.active) return;
+  const dx = ev.clientX - pan.sx;
+  const dy = ev.clientY - pan.sy;
+  zoom.x = pan.ox + dx;
+  zoom.y = pan.oy + dy;
+  setTransform();
+});
+window.addEventListener("mouseup", ()=>{ pan.active = false; });
+
+function attachNodeDrag(g, n){
+  let drag = { active:false, sx:0, sy:0, ox:0, oy:0 };
+  g.addEventListener("mousedown", (ev)=>{
+    ev.stopPropagation();
+    drag.active = true;
+    drag.sx = ev.clientX;
+    drag.sy = ev.clientY;
+    drag.ox = n.x;
+    drag.oy = n.y;
+  });
+  window.addEventListener("mousemove", (ev)=>{
+    if(!drag.active) return;
+    const dx = (ev.clientX - drag.sx) / zoom.k;
+    const dy = (ev.clientY - drag.sy) / zoom.k;
+    n.x = drag.ox + dx;
+    n.y = drag.oy + dy;
+    g.setAttribute("transform", `translate(${n.x},${n.y})`);
+    redrawEdges();
+  });
+  window.addEventListener("mouseup", ()=>{ drag.active = false; });
+}
+
+function redrawEdges(){
+  const edges = [...viewport.querySelectorAll(".edge")];
+  edges.forEach(path=>{
+    const idx = Number(path.dataset.idx);
+    const e = graph.edges[idx];
+    const a = nodeById(e.from), b = nodeById(e.to);
+    if(!a || !b) return;
+    const ax = a.x + a.w/2, ay = a.y + a.h/2;
+    const bx = b.x + b.w/2, by = b.y + b.h/2;
+    const dx = bx - ax, dy = by - ay;
+    const curve = clamp(Math.hypot(dx,dy)/5, 30, 160);
+    const cx1 = ax + dx*0.25 + (dy ? (dy/Math.abs(dy))*curve : curve)*0.35;
+    const cy1 = ay + dy*0.25 - (dx ? (dx/Math.abs(dx))*curve : curve)*0.35;
+    const cx2 = ax + dx*0.75 + (dy ? (dy/Math.abs(dy))*curve : curve)*0.20;
+    const cy2 = ay + dy*0.75 - (dx ? (dx/Math.abs(dx))*curve : curve)*0.20;
+    path.setAttribute("d", `M ${ax} ${ay} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${bx} ${by}`);
+  });
+}
+
+document.getElementById("resetBtn").addEventListener("click", ()=>{
+  zoom = { k: 1, x: 0, y: 0 };
+  setTransform();
+  selectedId = null;
+  updateInspector(null);
+  clearFocus();
+  applyVisibility();
+});
+Object.values(toggles).forEach(t=> t.addEventListener("change", applyVisibility));
+
+document.getElementById("search").addEventListener("input", (ev)=>{
+  const q = ev.target.value.trim().toLowerCase();
+  if(!q){
+    if(selectedId) highlightFocus(selectedId);
+    else clearFocus();
+    return;
+  }
+  const matches = graph.nodes.filter(n =>
+    n.label.toLowerCase().includes(q) ||
+    n.subtitle.toLowerCase().includes(q) ||
+    (n.owner||"").toLowerCase().includes(q) ||
+    (n.tags||[]).some(t=>t.toLowerCase().includes(q))
+  );
+  if(matches.length){
+    viewport.querySelectorAll(".node").forEach(g=>{
+      const nid = g.dataset.id;
+      const ok = matches.some(m=>m.id===nid);
+      g.classList.toggle("dim", !ok);
+    });
+    viewport.querySelectorAll(".edge").forEach(e=> e.classList.add("hidden"));
+  }
+});
+
+
+// Top bar segmented controls
+function setActiveButton(groupEl, btn){
+  [...groupEl.querySelectorAll(".seg-btn")].forEach(b=>{
+    const isActive = b === btn;
+    b.classList.toggle("active", isActive);
+    b.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+}
+
+document.getElementById("viewSeg").addEventListener("click", (ev)=>{
+  const btn = ev.target.closest(".seg-btn");
+  if(!btn) return;
+  const v = btn.dataset.view;
+  if(!v || v === currentView) return;
+  currentView = v;
+  setActiveButton(document.getElementById("viewSeg"), btn);
+  render();
+});
+
+document.getElementById("themeSeg").addEventListener("click", (ev)=>{
+  const btn = ev.target.closest(".seg-btn");
+  if(!btn) return;
+  const t = btn.dataset.theme;
+  if(!t) return;
+  document.body.className = t;
+  setActiveButton(document.getElementById("themeSeg"), btn);
+});
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tod — Architecture Map</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+  /* Default: Schematic Light */
+  --bg: #f4f1ec;
+  --bg-secondary: #ebe7e0;
+  --bg-panel: #ffffff;
+  --text: #2c2825;
+  --text-muted: #7a7470;
+  --text-dim: #a39e99;
+  --accent: #c45a3c;
+  --accent-hover: #a84530;
+  --accent-secondary: #3c7a8c;
+  --accent-tertiary: #6b8c3c;
+  --border: #d4cfc8;
+  --border-light: #e8e4de;
+  --node-cli: #c45a3c;
+  --node-orchestration: #3c7a8c;
+  --node-domain: #6b8c3c;
+  --node-infra: #8c6b3c;
+  --node-data: #7a3c8c;
+  --edge-default: #b8b2aa;
+  --edge-active: #c45a3c;
+  --edge-data: #3c7a8c;
+  --edge-control: #6b8c3c;
+  --shadow: rgba(44, 40, 37, 0.08);
+  --shadow-strong: rgba(44, 40, 37, 0.16);
+  --glow: rgba(196, 90, 60, 0.15);
+  --tooltip-bg: #2c2825;
+  --tooltip-text: #f4f1ec;
+  --code-bg: #ebe7e0;
+  --badge-bg: rgba(196, 90, 60, 0.1);
+  --badge-text: #c45a3c;
+  --canvas-grid: rgba(44, 40, 37, 0.04);
+  --canvas-grid-major: rgba(44, 40, 37, 0.08);
+}
+
+[data-theme="paper"] {
+  --bg: #faf8f5;
+  --bg-secondary: #f0ede8;
+  --bg-panel: #ffffff;
+  --text: #1a1816;
+  --text-muted: #6b6560;
+  --text-dim: #9a9590;
+  --accent: #2563a0;
+  --accent-hover: #1d4f82;
+  --accent-secondary: #a05525;
+  --accent-tertiary: #2a7a4a;
+  --border: #ddd8d0;
+  --border-light: #ece8e2;
+  --node-cli: #2563a0;
+  --node-orchestration: #a05525;
+  --node-domain: #2a7a4a;
+  --node-infra: #7a5a2a;
+  --node-data: #6a2a7a;
+  --edge-default: #c8c2ba;
+  --edge-active: #2563a0;
+  --edge-data: #a05525;
+  --edge-control: #2a7a4a;
+  --shadow: rgba(26, 24, 22, 0.06);
+  --shadow-strong: rgba(26, 24, 22, 0.12);
+  --glow: rgba(37, 99, 160, 0.12);
+  --tooltip-bg: #1a1816;
+  --tooltip-text: #faf8f5;
+  --code-bg: #f0ede8;
+  --badge-bg: rgba(37, 99, 160, 0.08);
+  --badge-text: #2563a0;
+  --canvas-grid: rgba(26, 24, 22, 0.03);
+  --canvas-grid-major: rgba(26, 24, 22, 0.06);
+}
+
+[data-theme="terminal"] {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-panel: #1c2128;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-dim: #484f58;
+  --accent: #58a6ff;
+  --accent-hover: #79bbff;
+  --accent-secondary: #3fb950;
+  --accent-tertiary: #d29922;
+  --border: #30363d;
+  --border-light: #21262d;
+  --node-cli: #58a6ff;
+  --node-orchestration: #d29922;
+  --node-domain: #3fb950;
+  --node-infra: #da8b45;
+  --node-data: #bc8cff;
+  --edge-default: #30363d;
+  --edge-active: #58a6ff;
+  --edge-data: #d29922;
+  --edge-control: #3fb950;
+  --shadow: rgba(0, 0, 0, 0.3);
+  --shadow-strong: rgba(0, 0, 0, 0.5);
+  --glow: rgba(88, 166, 255, 0.15);
+  --tooltip-bg: #30363d;
+  --tooltip-text: #c9d1d9;
+  --code-bg: #161b22;
+  --badge-bg: rgba(88, 166, 255, 0.12);
+  --badge-text: #58a6ff;
+  --canvas-grid: rgba(48, 54, 61, 0.3);
+  --canvas-grid-major: rgba(48, 54, 61, 0.6);
+}
+
+[data-theme="obsidian"] {
+  --bg: #141018;
+  --bg-secondary: #1c1722;
+  --bg-panel: #221d2a;
+  --text: #d4cee0;
+  --text-muted: #8a82a0;
+  --text-dim: #554e68;
+  --accent: #c792ea;
+  --accent-hover: #dab2f5;
+  --accent-secondary: #89ddff;
+  --accent-tertiary: #c3e88d;
+  --border: #332d40;
+  --border-light: #2a2535;
+  --node-cli: #c792ea;
+  --node-orchestration: #ffcb6b;
+  --node-domain: #c3e88d;
+  --node-infra: #f78c6c;
+  --node-data: #89ddff;
+  --edge-default: #332d40;
+  --edge-active: #c792ea;
+  --edge-data: #89ddff;
+  --edge-control: #c3e88d;
+  --shadow: rgba(0, 0, 0, 0.4);
+  --shadow-strong: rgba(0, 0, 0, 0.6);
+  --glow: rgba(199, 146, 234, 0.2);
+  --tooltip-bg: #332d40;
+  --tooltip-text: #d4cee0;
+  --code-bg: #1c1722;
+  --badge-bg: rgba(199, 146, 234, 0.12);
+  --badge-text: #c792ea;
+  --canvas-grid: rgba(51, 45, 64, 0.3);
+  --canvas-grid-major: rgba(51, 45, 64, 0.6);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  transition: background 0.4s, color 0.4s;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  grid-template-rows: 56px 1fr;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ─── TOOLBAR ─── */
+.toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+}
+
+.toolbar-brand {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.5px;
+  margin-right: 20px;
+  color: var(--accent);
+}
+
+.toolbar-brand span { color: var(--text-muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+
+.toolbar-sep {
+  width: 1px;
+  height: 28px;
+  background: var(--border);
+  margin: 0 8px;
+}
+
+.btn-group {
+  display: flex;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn:hover { color: var(--text); background: var(--bg-panel); }
+.btn.active { color: var(--accent); background: var(--bg-panel); box-shadow: 0 1px 3px var(--shadow); }
+
+.toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.theme-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.theme-btn:hover { transform: scale(1.15); border-color: var(--accent); }
+.theme-btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow); }
+.theme-btn[data-theme="schematic"] { background: #f4f1ec; }
+.theme-btn[data-theme="paper"] { background: #faf8f5; }
+.theme-btn[data-theme="terminal"] { background: #0d1117; }
+.theme-btn[data-theme="obsidian"] { background: linear-gradient(135deg, #141018, #221d2a); }
+
+/* ─── CANVAS ─── */
+.canvas-container {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.canvas-bg {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(var(--canvas-grid-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid-major) 1px, transparent 1px);
+  background-size: 20px 20px, 20px 20px, 100px 100px, 100px 100px;
+  pointer-events: none;
+}
+
+svg.graph {
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+svg.graph:active { cursor: grabbing; }
+
+/* ─── NODES ─── */
+.node { cursor: pointer; }
+
+.node-body {
+  rx: 10;
+  ry: 10;
+  stroke-width: 1.5;
+  transition: all 0.2s;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.08));
+}
+
+.node:hover .node-body {
+  stroke-width: 2.5;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.15));
+}
+
+.node.selected .node-body {
+  stroke-width: 3;
+  filter: drop-shadow(0 4px 16px rgba(0,0,0,0.2));
+}
+
+.node.dimmed { opacity: 0.2; }
+.node.highlighted .node-body { stroke-width: 2.5; }
+
+.node-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  font-size: 12px;
+  fill: var(--bg-panel);
+  pointer-events: none;
+}
+
+.node-subtitle {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 400;
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.node-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  font-size: 8px;
+  pointer-events: none;
+}
+
+/* ─── EDGES ─── */
+.edge {
+  fill: none;
+  stroke-width: 1.5;
+  stroke: var(--edge-default);
+  transition: all 0.3s;
+}
+
+.edge.dimmed { opacity: 0.06; }
+.edge.highlighted { stroke-width: 2.5; opacity: 1; }
+.edge.highlighted.dep { stroke: var(--edge-active); }
+.edge.highlighted.data { stroke: var(--edge-data); }
+.edge.highlighted.control { stroke: var(--edge-control); }
+
+.edge-arrow {
+  fill: var(--edge-default);
+  transition: all 0.3s;
+}
+
+.edge-arrow.dimmed { opacity: 0.06; }
+.edge-arrow.highlighted.dep { fill: var(--edge-active); }
+.edge-arrow.highlighted.data { fill: var(--edge-data); }
+.edge-arrow.highlighted.control { fill: var(--edge-control); }
+
+.edge-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  fill: var(--text-dim);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.edge-label.visible { opacity: 1; }
+
+/* ─── DETAIL PANEL ─── */
+.panel {
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 0;
+  transition: background 0.4s;
+}
+
+.panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px;
+  gap: 12px;
+}
+
+.panel-empty-icon { font-size: 32px; opacity: 0.4; }
+
+.panel-header {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border-light);
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 10;
+}
+
+.panel-module {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.panel-layer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+
+.panel-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.metric {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 10px;
+  text-align: center;
+}
+
+.metric-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.metric-label {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.panel-section {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.panel-section:last-child { border-bottom: none; }
+
+.section-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.section-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.dep-list { list-style: none; }
+
+.dep-item {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 5px 8px;
+  margin: 2px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dep-item:hover { background: var(--bg-secondary); }
+
+.dep-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.state-tag {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--badge-bg);
+  color: var(--badge-text);
+}
+
+.state-tag.strong { background: rgba(60, 140, 60, 0.12); color: #4a8c4a; }
+.state-tag.watch { background: rgba(196, 140, 60, 0.12); color: #b08030; }
+.state-tag.stable { background: var(--badge-bg); color: var(--badge-text); }
+
+.owns-list { list-style: none; }
+
+.owns-item {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 0;
+  color: var(--text);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.owns-icon { color: var(--accent-secondary); font-size: 10px; flex-shrink: 0; }
+
+.data-tag {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin: 1px 2px;
+}
+
+.data-tag.transform { background: rgba(60, 122, 140, 0.12); color: var(--accent-secondary); }
+.data-tag.accumulate { background: rgba(196, 90, 60, 0.12); color: var(--accent); }
+.data-tag.escape { background: rgba(180, 60, 60, 0.15); color: #c04040; }
+
+.risk-item {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 0;
+  color: var(--text);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.risk-item:last-child { border-bottom: none; }
+
+/* ─── LEGEND ─── */
+.legend {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  font-size: 11px;
+  box-shadow: 0 2px 12px var(--shadow);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.legend-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.legend-line {
+  width: 20px;
+  height: 2px;
+  flex-shrink: 0;
+  border-radius: 1px;
+}
+
+/* ─── ZOOM CONTROLS ─── */
+.zoom-controls {
+  position: absolute;
+  bottom: 16px;
+  right: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 50;
+}
+
+.zoom-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px var(--shadow);
+  transition: all 0.15s;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.zoom-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ─── TOOLTIP ─── */
+.tooltip {
+  position: fixed;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 200;
+  max-width: 300px;
+  line-height: 1.5;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+
+.tooltip.visible { opacity: 1; }
+
+/* scrollbar */
+.panel::-webkit-scrollbar { width: 6px; }
+.panel::-webkit-scrollbar-track { background: transparent; }
+.panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.panel::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <div class="toolbar-brand">tod<span>architecture map</span></div>
+    <div class="toolbar-sep"></div>
+    <div class="btn-group" id="viewGroup">
+      <button class="btn active" data-view="dependency">Dependencies</button>
+      <button class="btn" data-view="control">Control Flow</button>
+      <button class="btn" data-view="data">Data Flow</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="btn-group" id="layerGroup">
+      <button class="btn active" data-layer="all">All</button>
+      <button class="btn" data-layer="cli">CLI</button>
+      <button class="btn" data-layer="orchestration">Orch</button>
+      <button class="btn" data-layer="domain">Domain</button>
+      <button class="btn" data-layer="infra">Infra</button>
+    </div>
+    <div class="toolbar-right">
+      <div class="theme-btn active" data-theme="schematic" title="Schematic (light)"></div>
+      <div class="theme-btn" data-theme="paper" title="Paper (light)"></div>
+      <div class="theme-btn" data-theme="terminal" title="Terminal (dark)"></div>
+      <div class="theme-btn" data-theme="obsidian" title="Obsidian (dark)"></div>
+    </div>
+  </div>
+
+  <div class="canvas-container">
+    <div class="canvas-bg"></div>
+    <svg class="graph" id="graph">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,3 L0,6 Z" class="edge-arrow"/>
+        </marker>
+        <marker id="arrow-dep" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,3 L0,6 Z" fill="var(--edge-active)"/>
+        </marker>
+        <marker id="arrow-data" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,3 L0,6 Z" fill="var(--edge-data)"/>
+        </marker>
+        <marker id="arrow-control" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,3 L0,6 Z" fill="var(--edge-control)"/>
+        </marker>
+      </defs>
+      <g id="edgeLayer"></g>
+      <g id="nodeLayer"></g>
+    </svg>
+
+    <div class="legend" id="legend"></div>
+
+    <div class="zoom-controls">
+      <button class="zoom-btn" id="zoomIn">+</button>
+      <button class="zoom-btn" id="zoomOut">−</button>
+      <button class="zoom-btn" id="zoomReset" style="font-size:12px;">⌂</button>
+    </div>
+  </div>
+
+  <div class="panel" id="panel">
+    <div class="panel-empty">
+      <div class="panel-empty-icon">◇</div>
+      <div>Click a module to inspect it.<br>Hover to trace dependencies.</div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// DATA MODEL — derived from reading every src/ file
+// ═══════════════════════════════════════════════════════════════
+
+const MODULES = {
+  'main': {
+    label: 'main.rs', layer: 'cli', loc: 281, tests: 4, state: 'stable',
+    x: 420, y: 60,
+    role: 'Entry point and CLI dispatch. Parses args via clap, routes to run/resume/init/status/stats. Owns startup banners, success output formatting, and process exit codes.',
+    owns: ['Process lifecycle', 'Exit codes (0/1/2)', 'Startup banners (stderr)', 'Success output (stdout)', 'Provider construction'],
+    dataOps: [
+      { type: 'transform', desc: 'CLI args → RunConfig' },
+      { type: 'transform', desc: 'LoopReport → formatted stdout' },
+      { type: 'escape', desc: 'Exit code to OS' }
+    ],
+    risks: []
+  },
+  'cli': {
+    label: 'cli.rs', layer: 'cli', loc: 310, tests: 10, state: 'stable',
+    x: 180, y: 60,
+    role: 'Clap-based argument parsing. Defines Command enum (Run, Init, Resume, Status, Stats) and converts into RunConfig. Pure parse layer — no side effects.',
+    owns: ['Command enum', 'Arg definitions + defaults', 'into_run_config() conversion'],
+    dataOps: [
+      { type: 'transform', desc: 'Raw argv → Command variants' },
+      { type: 'transform', desc: 'Command::Run → (goal, RunConfig)' }
+    ],
+    risks: []
+  },
+  'config': {
+    label: 'config.rs', layer: 'infra', loc: 91, tests: 2, state: 'stable',
+    x: 180, y: 180,
+    role: 'Immutable configuration contract. RunConfig and RunMode are constructed once, then passed by reference. Never mutated after creation.',
+    owns: ['RunConfig struct', 'RunMode enum', 'Default caps (5 iters/step, 25 total, 4096 runner bytes)'],
+    dataOps: [],
+    risks: []
+  },
+  'loop': {
+    label: 'loop.rs', layer: 'orchestration', loc: 2854, tests: 61, state: 'watch',
+    x: 420, y: 300,
+    role: 'Central orchestration brain. Owns RunState/StepState lifecycle, the plan→edit→apply→run→review loop, fingerprinting, cap guards, checkpoint writes, lifecycle messaging, and the run/resume public API.',
+    owns: ['RunState struct', 'StepState struct', 'Fingerprint + drift detection', 'RunProfile (frozen config for resume)', 'LoopReport + LoopError', 'Usage accumulation', 'llm_requests counter', 'run() / resume() / run_from_state()'],
+    dataOps: [
+      { type: 'accumulate', desc: 'Usage tokens accumulated across all LLM calls' },
+      { type: 'accumulate', desc: 'llm_requests incremented per provider call' },
+      { type: 'accumulate', desc: 'total_iterations incremented per attempt' },
+      { type: 'transform', desc: 'RunState → LoopReport on success' },
+      { type: 'transform', desc: 'ReviewDecision → step advancement or retry' },
+      { type: 'escape', desc: 'Checkpoint → .tod/state.json via loop_io' },
+      { type: 'escape', desc: 'Lifecycle messages → stderr' },
+      { type: 'escape', desc: 'Attempt/plan/final logs → .tod/logs/' }
+    ],
+    risks: [
+      '2854 LOC — primary blast radius for any change',
+      'Carries orchestration + accounting + logging + lifecycle',
+      'Six error paths repeat identical teardown ceremony',
+      'llm_requests incremented before create_edits (pre-increment ambiguity)',
+      'Plan-error path has no RunState → request/usage not tracked'
+    ]
+  },
+  'loop_io': {
+    label: 'loop_io.rs', layer: 'infra', loc: 185, tests: 4, state: 'stable',
+    x: 620, y: 420,
+    role: 'Persistence boundary. Handles all filesystem I/O for the loop: checkpoints (atomic write via tmp+rename), plan/attempt/final logs, run identity allocation with collision policy.',
+    owns: ['RunIdentity allocation', 'Atomic checkpoint write', 'Log file writers (plan, attempt, final)', 'Plan-error artifact writer'],
+    dataOps: [
+      { type: 'escape', desc: 'RunState → .tod/state.json (atomic)' },
+      { type: 'escape', desc: 'PlanLog → .tod/logs/<id>/plan.json' },
+      { type: 'escape', desc: 'AttemptLog → .tod/logs/<id>/step_N_attempt_M.json' },
+      { type: 'escape', desc: 'FinalLog → .tod/logs/<id>/final.json' }
+    ],
+    risks: []
+  },
+  'planner': {
+    label: 'planner.rs', layer: 'domain', loc: 274, tests: 11, state: 'stable',
+    x: 180, y: 300,
+    role: 'Plan generation via LLM. Sends project context + goal to provider, parses response into Plan (ordered list of PlanSteps). Validates non-empty steps and non-empty file lists.',
+    owns: ['Plan struct', 'PlanStep struct', 'PlanError enum', 'Planner system prompt', 'Plan validation (empty steps, empty files)'],
+    dataOps: [
+      { type: 'transform', desc: 'Goal + project context → LLM prompt' },
+      { type: 'transform', desc: 'LLM JSON response → Plan struct' }
+    ],
+    risks: []
+  },
+  'editor': {
+    label: 'editor.rs', layer: 'domain', loc: 220, tests: 8, state: 'stable',
+    x: 180, y: 420,
+    role: 'Edit generation via LLM. Takes a PlanStep + file context, calls provider, parses response into a validated EditBatch. Bridge between the plan and the schema safety boundary.',
+    owns: ['EditError enum', 'Editor system prompt', 'create_edits() function'],
+    dataOps: [
+      { type: 'transform', desc: 'PlanStep + file context → LLM prompt' },
+      { type: 'transform', desc: 'LLM JSON response → EditBatch (validated)' }
+    ],
+    risks: []
+  },
+  'reviewer': {
+    label: 'reviewer.rs', layer: 'domain', loc: 167, tests: 9, state: 'stable',
+    x: 620, y: 180,
+    role: 'Pure decision function. Takes RunResult + iteration count, returns Proceed/Retry/Abort. No state, no I/O, no side effects.',
+    owns: ['ReviewDecision enum', 'review() function — pure policy'],
+    dataOps: [
+      { type: 'transform', desc: 'RunResult + attempt count → ReviewDecision' }
+    ],
+    risks: []
+  },
+  'runner': {
+    label: 'runner.rs', layer: 'domain', loc: 645, tests: 19, state: 'strong',
+    x: 420, y: 480,
+    role: 'Filesystem boundary. Applies validated edits with transactional rollback, then runs the quality pipeline (cargo build/test/fmt/clippy). Owns output truncation.',
+    owns: ['RunResult enum', 'ApplyError enum', 'Transactional apply with snapshot+rollback', 'Pipeline stages per RunMode', 'Output truncation (byte-safe, line-snapped)'],
+    dataOps: [
+      { type: 'transform', desc: 'EditBatch → filesystem writes (transactional)' },
+      { type: 'transform', desc: 'cargo output → RunResult' },
+      { type: 'transform', desc: 'Raw output → truncated output (byte-safe)' },
+      { type: 'escape', desc: 'Edits → project files on disk' }
+    ],
+    risks: []
+  },
+  'schema': {
+    label: 'schema.rs', layer: 'domain', loc: 747, tests: 28, state: 'strong',
+    x: 180, y: 540,
+    role: 'Central safety boundary. Validates all edit paths (no escape, no traversal, no absolute), content sizes, line ranges, batch constraints (overlaps, conflicts, limits). Also owns the generic JSON extraction fallback.',
+    owns: ['EditAction enum (WriteFile, ReplaceRange)', 'EditBatch struct', 'ValidationError enum (13 variants)', 'Path validation (lexical + canonical)', 'Content size limit (512KiB)', 'Batch limit (20 actions)', 'extract_json<T>() generic'],
+    dataOps: [
+      { type: 'transform', desc: 'Raw LLM text → parsed JSON (3-tier fallback)' },
+      { type: 'transform', desc: 'Raw paths → validated safe paths' }
+    ],
+    risks: []
+  },
+  'context': {
+    label: 'context.rs', layer: 'domain', loc: 470, tests: 9, state: 'stable',
+    x: 60, y: 420,
+    role: 'Context construction for LLM calls. Builds planner context (file tree + Cargo.toml) and step context (numbered file contents). Budget-aware truncation. Also builds retry context from previous failure output.',
+    owns: ['Planner context (128KiB budget)', 'Step context (64KiB budget)', 'Retry context (8KiB budget)', 'format_file_context() helper', 'Depth/file-count limits'],
+    dataOps: [
+      { type: 'transform', desc: 'Project tree → planner context string' },
+      { type: 'transform', desc: 'File paths → numbered content (with budget)' },
+      { type: 'transform', desc: 'Error output → truncated retry context' }
+    ],
+    risks: ['No priority ordering — files truncated by position, not relevance']
+  },
+  'llm': {
+    label: 'llm.rs', layer: 'infra', loc: 425, tests: 15, state: 'stable',
+    x: 60, y: 180,
+    role: 'Provider abstraction. Defines LlmProvider trait (blocking, sequential). Anthropic implementation with exponential backoff retry (3 retries, ±25% jitter). Usage extraction from API response.',
+    owns: ['LlmProvider trait', 'LlmResponse struct', 'LlmError enum', 'Usage struct + accumulate()', 'AnthropicProvider (ureq, blocking)', 'Retry logic (3 retries, exponential backoff)'],
+    dataOps: [
+      { type: 'transform', desc: 'System + user prompt → API request' },
+      { type: 'transform', desc: 'API JSON → LlmResponse { text, usage }' },
+      { type: 'accumulate', desc: 'Transport retries internal (not exposed)' }
+    ],
+    risks: ['Single provider (Anthropic only) — strategic deferral']
+  },
+  'log_schema': {
+    label: 'log_schema.rs', layer: 'infra', loc: 99, tests: 1, state: 'stable',
+    x: 620, y: 300,
+    role: 'Pure data definitions for structured logs. AttemptLog, PlanLog, FinalLog, RunnerLog. Serde-only with backward-compatible defaults for legacy payloads.',
+    owns: ['AttemptLog struct', 'PlanLog struct', 'FinalLog struct', 'RunnerLog struct', 'Serde defaults for legacy compat'],
+    dataOps: [],
+    risks: []
+  },
+  'stats': {
+    label: 'stats.rs', layer: 'cli', loc: 1530, tests: 32, state: 'stable+',
+    x: 660, y: 60,
+    role: 'Read-only reporting. Summarizes runs from log files and state.json. Formats human-readable and JSON output. Compatibility-first with output contract tests.',
+    owns: ['RunSummary struct', 'MultiRunSummary struct', 'RunOutcome enum', 'Human + JSON formatters', 'Output contract stability'],
+    dataOps: [
+      { type: 'transform', desc: '.tod/logs/ → RunSummary structs' },
+      { type: 'transform', desc: 'RunState (state.json) → current status' },
+      { type: 'escape', desc: 'Formatted summary → stdout' }
+    ],
+    risks: ['Growing contract surface needs disciplined versioning']
+  },
+  'util': {
+    label: 'util.rs', layer: 'infra', loc: 49, tests: 3, state: 'stable',
+    x: 60, y: 540,
+    role: 'Tiny shared utilities. safe_preview() for UTF-8-safe truncation. warn!() macro for stderr warnings.',
+    owns: ['safe_preview() — UTF-8 boundary-safe truncation', 'warn!() macro'],
+    dataOps: [],
+    risks: []
+  },
+};
+
+// ─── DEPENDENCY EDGES ───
+const DEP_EDGES = [
+  { from: 'main', to: 'cli', label: 'parse' },
+  { from: 'main', to: 'config', label: '' },
+  { from: 'main', to: 'llm', label: 'provider' },
+  { from: 'main', to: 'loop', label: 'run/resume' },
+  { from: 'main', to: 'stats', label: 'status/stats' },
+  { from: 'cli', to: 'config', label: 'RunConfig' },
+  { from: 'loop', to: 'config', label: 'read' },
+  { from: 'loop', to: 'context', label: 'build ctx' },
+  { from: 'loop', to: 'editor', label: 'create edits' },
+  { from: 'loop', to: 'llm', label: 'trait obj' },
+  { from: 'loop', to: 'log_schema', label: 'log types' },
+  { from: 'loop', to: 'planner', label: 'create plan' },
+  { from: 'loop', to: 'reviewer', label: 'review()' },
+  { from: 'loop', to: 'runner', label: 'apply+run' },
+  { from: 'loop', to: 'schema', label: 'EditBatch' },
+  { from: 'loop', to: 'loop_io', label: 'persist' },
+  { from: 'editor', to: 'context', label: 'format_file_context' },
+  { from: 'editor', to: 'llm', label: 'complete()' },
+  { from: 'editor', to: 'planner', label: 'PlanStep' },
+  { from: 'editor', to: 'schema', label: 'validate' },
+  { from: 'planner', to: 'llm', label: 'complete()' },
+  { from: 'planner', to: 'schema', label: 'extract_json' },
+  { from: 'reviewer', to: 'runner', label: 'RunResult' },
+  { from: 'runner', to: 'config', label: 'RunMode' },
+  { from: 'runner', to: 'schema', label: 'EditAction' },
+  { from: 'context', to: 'schema', label: 'validate_path' },
+  { from: 'loop_io', to: 'log_schema', label: 'log structs' },
+  { from: 'stats', to: 'log_schema', label: 'log types' },
+  { from: 'stats', to: 'loop', label: 'RunState' },
+  { from: 'schema', to: 'util', label: 'safe_preview' },
+  { from: 'llm', to: 'util', label: 'safe_preview' },
+];
+
+// ─── CONTROL FLOW EDGES ───
+const CONTROL_EDGES = [
+  { from: 'main', to: 'cli', label: 'parse args' },
+  { from: 'main', to: 'llm', label: 'init provider' },
+  { from: 'main', to: 'loop', label: '① run() or resume()' },
+  { from: 'loop', to: 'context', label: '② build planner ctx' },
+  { from: 'loop', to: 'planner', label: '③ create plan' },
+  { from: 'planner', to: 'llm', label: 'LLM call' },
+  { from: 'loop', to: 'context', label: '④ build step ctx' },
+  { from: 'loop', to: 'editor', label: '⑤ create edits' },
+  { from: 'editor', to: 'llm', label: 'LLM call' },
+  { from: 'editor', to: 'schema', label: 'validate batch' },
+  { from: 'loop', to: 'runner', label: '⑥ apply + pipeline' },
+  { from: 'runner', to: 'schema', label: 'read edit actions' },
+  { from: 'loop', to: 'reviewer', label: '⑦ review result' },
+  { from: 'loop', to: 'loop_io', label: '⑧ checkpoint + log' },
+  { from: 'main', to: 'stats', label: 'status/stats path' },
+  { from: 'stats', to: 'loop_io', label: 'read logs' },
+];
+
+// ─── DATA FLOW EDGES ───
+const DATA_EDGES = [
+  { from: 'cli', to: 'main', label: 'RunConfig + goal' },
+  { from: 'main', to: 'loop', label: 'provider + goal + config' },
+  { from: 'context', to: 'planner', label: 'project context str' },
+  { from: 'planner', to: 'loop', label: 'Plan + Usage' },
+  { from: 'context', to: 'editor', label: 'file context str' },
+  { from: 'editor', to: 'loop', label: 'EditBatch + Usage' },
+  { from: 'llm', to: 'planner', label: 'LlmResponse' },
+  { from: 'llm', to: 'editor', label: 'LlmResponse' },
+  { from: 'runner', to: 'loop', label: 'RunResult' },
+  { from: 'reviewer', to: 'loop', label: 'ReviewDecision' },
+  { from: 'loop', to: 'loop_io', label: 'RunState (checkpoint)' },
+  { from: 'loop', to: 'loop_io', label: 'AttemptLog / FinalLog' },
+  { from: 'loop', to: 'main', label: 'LoopReport' },
+  { from: 'loop_io', to: 'stats', label: '.tod/ files (disk)' },
+];
+
+const LAYER_COLORS = {
+  cli: 'var(--node-cli)',
+  orchestration: 'var(--node-orchestration)',
+  domain: 'var(--node-domain)',
+  infra: 'var(--node-infra)',
+};
+
+const LAYER_LABELS = {
+  cli: 'CLI Layer',
+  orchestration: 'Orchestration',
+  domain: 'Domain',
+  infra: 'Infrastructure',
+};
+
+// ═══════════════════════════════════════════════════════════════
+// RENDERING ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+const svg = document.getElementById('graph');
+const edgeLayer = document.getElementById('edgeLayer');
+const nodeLayer = document.getElementById('nodeLayer');
+const panel = document.getElementById('panel');
+const tooltip = document.getElementById('tooltip');
+const legend = document.getElementById('legend');
+
+let currentView = 'dependency';
+let currentLayer = 'all';
+let selectedModule = null;
+
+// Pan/zoom state
+let viewBox = { x: -80, y: -20, w: 860, h: 660 };
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+
+function setViewBox() {
+  svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+}
+
+function screenToSVG(sx, sy) {
+  const rect = svg.getBoundingClientRect();
+  return {
+    x: viewBox.x + (sx - rect.left) / rect.width * viewBox.w,
+    y: viewBox.y + (sy - rect.top) / rect.height * viewBox.h
+  };
+}
+
+svg.addEventListener('mousedown', e => {
+  if (e.target === svg || e.target.closest('#edgeLayer') || e.target.tagName === 'svg') {
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY };
+  }
+});
+
+svg.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  const rect = svg.getBoundingClientRect();
+  const dx = (e.clientX - panStart.x) / rect.width * viewBox.w;
+  const dy = (e.clientY - panStart.y) / rect.height * viewBox.h;
+  viewBox.x -= dx;
+  viewBox.y -= dy;
+  panStart = { x: e.clientX, y: e.clientY };
+  setViewBox();
+});
+
+window.addEventListener('mouseup', () => { isPanning = false; });
+
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 1.08 : 0.92;
+  const pt = screenToSVG(e.clientX, e.clientY);
+  viewBox.x = pt.x - (pt.x - viewBox.x) * factor;
+  viewBox.y = pt.y - (pt.y - viewBox.y) * factor;
+  viewBox.w *= factor;
+  viewBox.h *= factor;
+  setViewBox();
+}, { passive: false });
+
+document.getElementById('zoomIn').addEventListener('click', () => {
+  const cx = viewBox.x + viewBox.w / 2, cy = viewBox.y + viewBox.h / 2;
+  viewBox.w *= 0.8; viewBox.h *= 0.8;
+  viewBox.x = cx - viewBox.w / 2; viewBox.y = cy - viewBox.h / 2;
+  setViewBox();
+});
+
+document.getElementById('zoomOut').addEventListener('click', () => {
+  const cx = viewBox.x + viewBox.w / 2, cy = viewBox.y + viewBox.h / 2;
+  viewBox.w *= 1.25; viewBox.h *= 1.25;
+  viewBox.x = cx - viewBox.w / 2; viewBox.y = cy - viewBox.h / 2;
+  setViewBox();
+});
+
+document.getElementById('zoomReset').addEventListener('click', () => {
+  viewBox = { x: -80, y: -20, w: 860, h: 660 };
+  setViewBox();
+});
+
+// ─── NODE RENDERING ───
+
+const NODE_W = 120;
+const NODE_H = 52;
+
+function renderNodes() {
+  nodeLayer.innerHTML = '';
+  for (const [id, mod] of Object.entries(MODULES)) {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'node');
+    g.setAttribute('data-id', id);
+    g.setAttribute('transform', `translate(${mod.x - NODE_W/2}, ${mod.y - NODE_H/2})`);
+
+    const color = LAYER_COLORS[mod.layer];
+    const sizeScale = Math.min(1, 0.5 + mod.loc / 3000);
+
+    // Body
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('class', 'node-body');
+    rect.setAttribute('width', NODE_W);
+    rect.setAttribute('height', NODE_H);
+    rect.setAttribute('fill', color);
+    rect.setAttribute('stroke', color);
+    rect.setAttribute('opacity', 0.9);
+    g.appendChild(rect);
+
+    // LOC bar (proportional width indicator)
+    const barW = NODE_W * sizeScale;
+    const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bar.setAttribute('x', 0);
+    bar.setAttribute('y', NODE_H - 4);
+    bar.setAttribute('width', barW);
+    bar.setAttribute('height', 4);
+    bar.setAttribute('rx', '0');
+    bar.setAttribute('ry', '0');
+    bar.setAttribute('fill', 'rgba(255,255,255,0.3)');
+    g.appendChild(bar);
+
+    // Title
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    title.setAttribute('class', 'node-title');
+    title.setAttribute('x', NODE_W / 2);
+    title.setAttribute('y', 22);
+    title.setAttribute('text-anchor', 'middle');
+    title.textContent = mod.label.replace('.rs', '');
+    g.appendChild(title);
+
+    // Subtitle
+    const sub = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    sub.setAttribute('class', 'node-subtitle');
+    sub.setAttribute('x', NODE_W / 2);
+    sub.setAttribute('y', 36);
+    sub.setAttribute('text-anchor', 'middle');
+    sub.setAttribute('fill', 'rgba(255,255,255,0.7)');
+    sub.textContent = `${mod.loc} LOC · ${mod.tests} tests`;
+    g.appendChild(sub);
+
+    // State badge
+    if (mod.state === 'watch' || mod.state === 'strong') {
+      const badge = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      badge.setAttribute('class', 'node-badge');
+      badge.setAttribute('x', NODE_W - 4);
+      badge.setAttribute('y', -4);
+      badge.setAttribute('text-anchor', 'end');
+      badge.setAttribute('fill', mod.state === 'watch' ? '#f0a030' : '#40c040');
+      badge.textContent = mod.state === 'watch' ? '⚠ watch' : '✓ strong';
+      g.appendChild(badge);
+    }
+
+    // Events
+    g.addEventListener('mouseenter', () => handleNodeHover(id));
+    g.addEventListener('mouseleave', handleNodeUnhover);
+    g.addEventListener('click', (e) => { e.stopPropagation(); handleNodeClick(id); });
+
+    nodeLayer.appendChild(g);
+  }
+}
+
+// ─── EDGE RENDERING ───
+
+function getEdges() {
+  switch (currentView) {
+    case 'dependency': return DEP_EDGES;
+    case 'control': return CONTROL_EDGES;
+    case 'data': return DATA_EDGES;
+    default: return DEP_EDGES;
+  }
+}
+
+function edgePath(from, to) {
+  const f = MODULES[from], t = MODULES[to];
+  if (!f || !t) return '';
+
+  const dx = t.x - f.x;
+  const dy = t.y - f.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return '';
+
+  // Offset from center to edge of node box
+  const fw = NODE_W / 2, fh = NODE_H / 2;
+  const tw = NODE_W / 2, th = NODE_H / 2;
+
+  // Calculate intersection with rectangle
+  function rectEdge(cx, cy, hw, hh, angle) {
+    const tan = Math.tan(angle);
+    const absTan = Math.abs(tan);
+    let ex, ey;
+    if (absTan * hw <= hh) {
+      ex = Math.cos(angle) > 0 ? hw : -hw;
+      ey = ex * tan;
+    } else {
+      ey = Math.sin(angle) > 0 ? hh : -hh;
+      ex = ey / tan;
+    }
+    return { x: cx + ex, y: cy + ey };
+  }
+
+  const angle = Math.atan2(dy, dx);
+  const p1 = rectEdge(f.x, f.y, fw, fh, angle);
+  const p2 = rectEdge(t.x, t.y, tw, th, angle + Math.PI);
+
+  // Curve
+  const mx = (p1.x + p2.x) / 2;
+  const my = (p1.y + p2.y) / 2;
+  const perpX = -(p2.y - p1.y) * 0.15;
+  const perpY = (p2.x - p1.x) * 0.15;
+
+  return `M${p1.x},${p1.y} Q${mx + perpX},${my + perpY} ${p2.x},${p2.y}`;
+}
+
+function renderEdges() {
+  edgeLayer.innerHTML = '';
+  const edges = getEdges();
+  const viewType = currentView === 'dependency' ? 'dep' : currentView === 'data' ? 'data' : 'control';
+
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    const d = edgePath(e.from, e.to);
+    if (!d) continue;
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('class', `edge ${viewType}`);
+    path.setAttribute('d', d);
+    path.setAttribute('data-from', e.from);
+    path.setAttribute('data-to', e.to);
+    path.setAttribute('marker-end', 'url(#arrow)');
+
+    if (currentView === 'control') {
+      path.setAttribute('stroke-dasharray', '6,3');
+    } else if (currentView === 'data') {
+      path.setAttribute('stroke-dasharray', '2,4');
+      path.setAttribute('stroke-width', '2');
+    }
+
+    edgeLayer.appendChild(path);
+
+    // Label
+    if (e.label) {
+      const f = MODULES[e.from], t = MODULES[e.to];
+      const mx = (f.x + t.x) / 2, my = (f.y + t.y) / 2;
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('class', 'edge-label');
+      text.setAttribute('x', mx);
+      text.setAttribute('y', my - 6);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('data-from', e.from);
+      text.setAttribute('data-to', e.to);
+      text.textContent = e.label;
+      edgeLayer.appendChild(text);
+    }
+  }
+}
+
+// ─── LEGEND ───
+
+function renderLegend() {
+  let html = '';
+  if (currentView === 'dependency') {
+    html = `
+      <div class="legend-title">Module Layers</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-cli)"></div> CLI</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-orchestration)"></div> Orchestration</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-domain)"></div> Domain</div>
+      <div class="legend-row"><div class="legend-dot" style="background:var(--node-infra)"></div> Infrastructure</div>
+      <div style="margin-top:6px" class="legend-title">Bar = relative LOC</div>
+    `;
+  } else if (currentView === 'control') {
+    html = `
+      <div class="legend-title">Control Flow</div>
+      <div class="legend-row"><div class="legend-line" style="background:var(--edge-control);"></div> Call path</div>
+      <div class="legend-row"><div class="legend-line" style="background:var(--edge-default);border-style:dashed;"></div> Numbered = sequence</div>
+      <div style="margin-top:4px;font-size:10px;color:var(--text-dim);">①→⑧ = main loop order</div>
+    `;
+  } else {
+    html = `
+      <div class="legend-title">Data Flow</div>
+      <div class="legend-row"><div class="legend-line" style="background:var(--edge-data);"></div> Data path</div>
+      <div style="margin-top:6px" class="legend-title">Data Operations</div>
+      <div class="legend-row"><span class="data-tag transform">transform</span> Shape change</div>
+      <div class="legend-row"><span class="data-tag accumulate">accumulate</span> State growth</div>
+      <div class="legend-row"><span class="data-tag escape">escape</span> Leaves process</div>
+    `;
+  }
+  legend.innerHTML = html;
+}
+
+// ─── INTERACTION ───
+
+function handleNodeHover(id) {
+  const edges = getEdges();
+  const connected = new Set();
+  connected.add(id);
+  edges.forEach(e => {
+    if (e.from === id || e.to === id) {
+      connected.add(e.from);
+      connected.add(e.to);
+    }
+  });
+
+  // Dim non-connected nodes
+  nodeLayer.querySelectorAll('.node').forEach(n => {
+    const nid = n.getAttribute('data-id');
+    n.classList.toggle('dimmed', !connected.has(nid));
+    n.classList.toggle('highlighted', connected.has(nid) && nid !== id);
+  });
+
+  // Highlight connected edges, dim others
+  edgeLayer.querySelectorAll('.edge').forEach(p => {
+    const from = p.getAttribute('data-from');
+    const to = p.getAttribute('data-to');
+    const isConnected = from === id || to === id;
+    p.classList.toggle('dimmed', !isConnected);
+    p.classList.toggle('highlighted', isConnected);
+    if (isConnected) {
+      const viewType = currentView === 'dependency' ? 'dep' : currentView === 'data' ? 'data' : 'control';
+      const marker = viewType === 'dep' ? 'arrow-dep' : viewType === 'data' ? 'arrow-data' : 'arrow-control';
+      p.setAttribute('marker-end', `url(#${marker})`);
+    }
+  });
+
+  // Show edge labels for connected edges
+  edgeLayer.querySelectorAll('.edge-label').forEach(l => {
+    const from = l.getAttribute('data-from');
+    const to = l.getAttribute('data-to');
+    l.classList.toggle('visible', from === id || to === id);
+  });
+}
+
+function handleNodeUnhover() {
+  nodeLayer.querySelectorAll('.node').forEach(n => {
+    n.classList.remove('dimmed', 'highlighted');
+  });
+  edgeLayer.querySelectorAll('.edge').forEach(p => {
+    p.classList.remove('dimmed', 'highlighted');
+    p.setAttribute('marker-end', 'url(#arrow)');
+  });
+  edgeLayer.querySelectorAll('.edge-label').forEach(l => {
+    l.classList.remove('visible');
+  });
+}
+
+function handleNodeClick(id) {
+  selectedModule = id;
+  nodeLayer.querySelectorAll('.node').forEach(n => {
+    n.classList.toggle('selected', n.getAttribute('data-id') === id);
+  });
+  renderPanel(id);
+}
+
+svg.addEventListener('click', (e) => {
+  if (e.target === svg || e.target.closest('.canvas-bg')) {
+    selectedModule = null;
+    nodeLayer.querySelectorAll('.node').forEach(n => n.classList.remove('selected'));
+    renderEmptyPanel();
+  }
+});
+
+// ─── PANEL ───
+
+function renderEmptyPanel() {
+  panel.innerHTML = `
+    <div class="panel-empty">
+      <div class="panel-empty-icon">◇</div>
+      <div>Click a module to inspect it.<br>Hover to trace dependencies.</div>
+    </div>
+  `;
+}
+
+function renderPanel(id) {
+  const mod = MODULES[id];
+  const edges = getEdges();
+
+  const inbound = edges.filter(e => e.to === id).map(e => ({ id: e.from, label: e.label }));
+  const outbound = edges.filter(e => e.from === id).map(e => ({ id: e.to, label: e.label }));
+
+  const stateClass = mod.state === 'strong' ? 'strong' : mod.state === 'watch' ? 'watch' : 'stable';
+
+  let html = `
+    <div class="panel-header">
+      <div class="panel-module">${mod.label}</div>
+      <div class="panel-layer" style="color:${LAYER_COLORS[mod.layer]}">${LAYER_LABELS[mod.layer]}
+        <span class="state-tag ${stateClass}" style="margin-left:8px">${mod.state}</span>
+      </div>
+    </div>
+    <div class="panel-metrics">
+      <div class="metric"><div class="metric-value">${mod.loc.toLocaleString()}</div><div class="metric-label">Lines</div></div>
+      <div class="metric"><div class="metric-value">${mod.tests}</div><div class="metric-label">Tests</div></div>
+      <div class="metric"><div class="metric-value">${Math.round(mod.tests / (mod.loc / 100) * 10) / 10}</div><div class="metric-label">Tests/100L</div></div>
+    </div>
+    <div class="panel-section">
+      <div class="section-title">Role</div>
+      <div class="section-text">${mod.role}</div>
+    </div>
+    <div class="panel-section">
+      <div class="section-title">State Ownership</div>
+      <ul class="owns-list">
+        ${mod.owns.map(o => `<li class="owns-item"><span class="owns-icon">▸</span> ${o}</li>`).join('')}
+      </ul>
+    </div>
+  `;
+
+  if (mod.dataOps.length > 0) {
+    html += `
+      <div class="panel-section">
+        <div class="section-title">Data Operations</div>
+        ${mod.dataOps.map(op => `
+          <div style="margin:4px 0;font-size:12px;line-height:1.5;">
+            <span class="data-tag ${op.type}">${op.type}</span>
+            ${op.desc}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  const viewLabel = currentView === 'dependency' ? 'Dependencies' : currentView === 'control' ? 'Control Connections' : 'Data Connections';
+
+  if (inbound.length > 0) {
+    html += `
+      <div class="panel-section">
+        <div class="section-title">Inbound ${viewLabel} (${inbound.length})</div>
+        <ul class="dep-list">
+          ${inbound.map(d => `
+            <li class="dep-item" onclick="handleNodeClick('${d.id}')">
+              <span class="dep-dot" style="background:${LAYER_COLORS[MODULES[d.id].layer]}"></span>
+              ${MODULES[d.id].label}
+              ${d.label ? `<span style="color:var(--text-dim);font-size:10px;margin-left:auto;">${d.label}</span>` : ''}
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  if (outbound.length > 0) {
+    html += `
+      <div class="panel-section">
+        <div class="section-title">Outbound ${viewLabel} (${outbound.length})</div>
+        <ul class="dep-list">
+          ${outbound.map(d => `
+            <li class="dep-item" onclick="handleNodeClick('${d.id}')">
+              <span class="dep-dot" style="background:${LAYER_COLORS[MODULES[d.id].layer]}"></span>
+              ${MODULES[d.id].label}
+              ${d.label ? `<span style="color:var(--text-dim);font-size:10px;margin-left:auto;">${d.label}</span>` : ''}
+            </li>
+          `).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  if (mod.risks.length > 0) {
+    html += `
+      <div class="panel-section">
+        <div class="section-title" style="color:#c04040;">Known Risks</div>
+        ${mod.risks.map(r => `<div class="risk-item">⚠ ${r}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  // Cross-layer dependency analysis
+  const crossLayer = outbound.filter(d => {
+    const targetLayer = MODULES[d.id].layer;
+    const sourceLayer = mod.layer;
+    // Domain depending on infra is fine; infra depending on domain is a smell
+    if (sourceLayer === 'infra' && (targetLayer === 'domain' || targetLayer === 'orchestration' || targetLayer === 'cli')) return true;
+    // CLI depending on orchestration internals (not just public API)
+    if (sourceLayer === 'cli' && targetLayer === 'orchestration' && d.label && d.label.includes('RunState')) return true;
+    return false;
+  });
+
+  if (crossLayer.length > 0) {
+    html += `
+      <div class="panel-section">
+        <div class="section-title" style="color:#b08030;">Cross-Layer Dependencies</div>
+        ${crossLayer.map(d => `
+          <div style="font-size:12px;margin:4px 0;color:var(--text);">
+            → ${MODULES[d.id].label} <span style="color:var(--text-dim);">(${LAYER_LABELS[MODULES[d.id].layer]})</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  panel.innerHTML = html;
+}
+
+// ─── VIEW/LAYER SWITCHING ───
+
+document.getElementById('viewGroup').addEventListener('click', e => {
+  const btn = e.target.closest('.btn');
+  if (!btn) return;
+  document.querySelectorAll('#viewGroup .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentView = btn.dataset.view;
+  renderEdges();
+  renderLegend();
+  if (selectedModule) renderPanel(selectedModule);
+});
+
+document.getElementById('layerGroup').addEventListener('click', e => {
+  const btn = e.target.closest('.btn');
+  if (!btn) return;
+  document.querySelectorAll('#layerGroup .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentLayer = btn.dataset.layer;
+  applyLayerFilter();
+});
+
+function applyLayerFilter() {
+  nodeLayer.querySelectorAll('.node').forEach(n => {
+    const id = n.getAttribute('data-id');
+    const mod = MODULES[id];
+    if (currentLayer === 'all') {
+      n.style.opacity = '';
+      n.style.pointerEvents = '';
+    } else {
+      const match = mod.layer === currentLayer;
+      n.style.opacity = match ? '' : '0.12';
+      n.style.pointerEvents = match ? '' : 'none';
+    }
+  });
+
+  edgeLayer.querySelectorAll('.edge').forEach(p => {
+    const from = MODULES[p.getAttribute('data-from')];
+    const to = MODULES[p.getAttribute('data-to')];
+    if (currentLayer === 'all') {
+      p.style.opacity = '';
+    } else {
+      const match = from.layer === currentLayer || to.layer === currentLayer;
+      p.style.opacity = match ? '' : '0.04';
+    }
+  });
+}
+
+// ─── THEME ───
+
+document.querySelectorAll('.theme-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const theme = btn.dataset.theme;
+    if (theme === 'schematic') {
+      document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+  });
+});
+
+// ─── TOOLTIP (for edges on hover) ───
+
+svg.addEventListener('mousemove', e => {
+  const edgeEl = e.target.closest('.edge');
+  if (edgeEl) {
+    const from = edgeEl.getAttribute('data-from');
+    const to = edgeEl.getAttribute('data-to');
+    const edges = getEdges();
+    const edge = edges.find(ed => ed.from === from && ed.to === to);
+    if (edge && edge.label) {
+      tooltip.textContent = `${MODULES[from].label} → ${MODULES[to].label}: ${edge.label}`;
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 8) + 'px';
+      tooltip.classList.add('visible');
+    }
+  } else {
+    tooltip.classList.remove('visible');
+  }
+});
+
+// ─── INIT ───
+
+setViewBox();
+renderNodes();
+renderEdges();
+renderLegend();
+</script>
+</body>
+</html>
