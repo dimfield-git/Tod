@@ -1,124 +1,187 @@
-# Tod Strategic Plan (Post-Phase 13)
+# Tod Strategic Plan (Post-Phase 15)
 
 Date: 2026-03-03  
 Baseline validated on current tree:
-- `cargo test`: **178 passed, 1 ignored**
+- `cargo test`: **193 passed, 1 ignored**
 - `cargo clippy -- -D warnings`: **clean**
 
 ---
 
 ## 1. Strategic Objective
 
-Move Tod from a strong prototype to a reliable operator-grade terminal agent by prioritizing:
-1. observability completeness,
-2. schema and module boundary stability,
-3. deterministic metrics/reporting semantics,
-4. controlled maintainability improvements before major feature expansion.
+Evolve Tod from a strong prototype into a practical, trustworthy Rust coding agent for day-to-day terminal workflows.
+
+Near-term objective:
+- keep reliability invariants intact,
+- improve real-world usability and operator trust,
+- add capability only where it directly increases successful Rust task completion.
 
 ---
 
-## 2. Current State Snapshot
+## 2. Agent Usage Model and Options
 
-### What is strong now
-- Resume determinism and drift detection materially improved in Phase 13.
-- Safety rails are solid (path validation + transactional edit apply).
-- Test depth is high and concentrated on critical runtime paths.
+## How the agent will be used
 
-### What still limits external trust
-- Planner-stage failures have no run artifact trail.
-- Stats depends directly on loop-owned log/state structs.
-- `loop.rs` remains a concentration hotspot with growing change complexity.
+1. Solo developer workflow
+- Run Tod on a local Rust project for scoped tasks (bugs, refactors, focused feature increments).
+- Use strict mode when code quality policy matters, dry-run when reviewing intent first.
+
+2. Team-internal assistant workflow
+- Use Tod on prepared branches/worktrees for repetitive maintenance tasks.
+- Inspect `.tod/logs` artifacts for run auditability and postmortem analysis.
+
+3. Controlled CI-adjacent automation (future-ready)
+- Use deterministic caps and strict pipelines for controlled auto-fix experiments.
+- Resume support helps handle interrupted sessions without losing context.
+
+## Options we have next
+
+Path A: Reliability-first productization (recommended next)
+- Improve isolation, runbook docs, and operator ergonomics before larger capability jumps.
+
+Path B: Capability-first expansion
+- Add patch mode and advanced planning/review logic first; higher upside, higher regression risk.
+
+Path C: Distribution-first
+- Focus on packaging and adoption ergonomics now; risks exposing rough edges before workflow hardening.
+
+Recommendation:
+- Execute Path A now, then blend in selected Path B items once operational safety/usability is stronger.
 
 ---
 
-## 3. Prioritized Work Inventory
+## 3. Remaining Work Inventory
 
-## Priority: Must
+## Must
 
-| Item | Why it matters | Risk | Effort | Primary files |
+| Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Decouple stats schema from loop internals | Reduces change blast radius and makes log schema evolution safer | Medium | M | `src/loop.rs`, `src/stats.rs`, new shared schema module |
-| Add planner-stage terminal artifacts | Closes observability gap for failures before `RunState` exists | Medium | M | `src/loop.rs` (and possibly bootstrap helper) |
-| Improve run outcome aggregates in stats | Better operational reporting fidelity | Low-Med | S-M | `src/stats.rs` |
-| Clarify/normalize request counting semantics | Prevents operator confusion around billed vs observed calls | Medium | M | `src/loop.rs`, `src/stats.rs`, docs |
+| Git-safe workflow mode (branch/worktree guardrails) | Makes real repo usage safer and reversible | Med-High | M-L | `loop.rs`, new git integration module, docs |
+| Operator runbook and failure-recovery docs | Converts prototype into usable tool for non-authors | Low | S-M | `README.md`, `docs/`, AGENTS phase docs |
+| Continue `loop.rs` surface reduction with behavior parity | Lowers regression risk as features grow | Medium | M | `loop.rs`, `loop_io.rs`, tests |
+| Context robustness for larger Rust repos | Improves success rate on realistic codebases | Medium | M | `context.rs`, `planner.rs`, `editor.rs` |
 
-## Priority: Should
+## Should
 
-| Item | Why it matters | Risk | Effort | Primary files |
+| Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Focused decomposition of `loop.rs` helper concerns | Lowers maintenance/regression risk without behavior change | Medium | M | `src/loop.rs` + extracted helper module(s) |
-| Harden JSON extraction against multi-block markdown noise | Better resilience to model response variance | Medium | S-M | `src/schema.rs` |
-| Add explicit docs parity checks to phase completion workflow | Prevents documentation drift | Low | S | `AGENTS.md`, phase files, docs |
+| Patch/diff edit contract (non-destructive preference) | Better edit precision and reviewability | Medium | M-L | `schema.rs`, `editor.rs`, `runner.rs` |
+| Enhanced stats output (structured export + richer counters) | Better operational visibility | Low-Med | S-M | `stats.rs`, docs |
+| Provider abstraction expansion (second backend) | Cost/reliability flexibility | Medium | M | `llm.rs`, config/CLI/docs |
 
-## Priority: Nice / Later
+## Nice
 
-| Item | Why it matters | Risk | Effort | Primary files |
+| Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Patch/diff edit mode | Could cut token cost and improve precision | High | L | `schema.rs`, `editor.rs`, `runner.rs` |
-| Git branch isolation | Safer worktree handling for real projects | High | L | new git integration layer + loop/runner |
-| Local model provider support | Cost/offline flexibility | High | L | `llm.rs`, config/CLI/docs |
-| Optional planner reflection pass | Improves plan quality for complex goals | Medium | M | `planner.rs`, `loop.rs` |
+| Optional planner self-check/reflection pass | Better plan quality on ambiguous goals | Medium | M | `planner.rs`, `loop.rs` |
+| Configurable runner stage presets | Better adaptation to project conventions | Medium | M | `config.rs`, `runner.rs`, CLI |
+
+## Future
+
+| Item | Payoff | Risk | Effort | Touch points |
+|---|---|---|---|---|
+| Remote/daemon mode | Enables service workflows | High | L | architecture-wide |
+| Multi-language expansion beyond Rust | Larger market scope | High | L | prompts/schema/runner/context |
 
 ---
 
-## 4. Recommended Phase Sequence
+## 4. What Is Left for Tod to Be a Functional, High-Utility Rust Agent
 
-## Phase 14 (next): Observability and Schema Cohesion
+Tod already functions. What remains is scaling practical utility safely:
 
-Primary target:
-- operational integrity over feature expansion.
+1. Safe application boundary in real repos
+- Add first-class git isolation strategy and explicit approval/review loop options.
 
-Proposed scope:
-1. shared log schema extraction used by both loop writer and stats reader,
-2. planner-stage failure terminal artifact support,
-3. stats aggregate outcome expansion (infra failures explicit),
-4. request-count semantics hardening and documentation.
+2. Higher-confidence edit precision
+- Introduce patch/diff-first mode to reduce broad file rewrites.
 
-Expected impact:
-- lower maintenance risk,
-- better forensic completeness,
-- higher operator trust in metrics.
+3. Better large-project context handling
+- Improve context selection and summarization for bigger trees and noisy diagnostics.
 
-## Phase 15: Loop Maintainability and Compatibility Hardening
+4. Better operator experience
+- Clear runbooks, troubleshooting, and decision guidance (strict vs default vs dry-run, when to resume with `--force`, token cap tuning).
 
-Primary target:
-- reduce orchestration change risk while keeping behavior stable.
-
-Proposed scope:
-1. extract selected `loop.rs` helper concerns (checkpoint/log write helpers, compatibility checks),
-2. retain backward compatibility for existing artifacts,
-3. add regression-focused tests for extracted boundaries.
-
-## Phase 16: Model IO Robustness and Input Surface Hardening
-
-Primary target:
-- improve resilience to messy LLM responses and mixed-content repositories.
-
-Proposed scope:
-1. stronger `extract_json` behavior for multi-block responses,
-2. optional handling path for non-UTF8 file context rendering,
-3. validation/path edge-case regression tests.
+5. Flexibility in model backend
+- Add at least one additional provider to reduce single-vendor dependency.
 
 ---
 
-## 5. Success Criteria for Next 1-2 Phases
+## 5. Proposed Phase Roadmap (Next 3 Phases)
 
-By end of Phase 14/15, Tod should have:
-- complete terminal artifact coverage for all major failure classes,
-- a shared stable log schema independent of loop internals,
-- clearer operator metrics semantics,
-- reduced risk of regressions in orchestration refactors.
+## Phase 16: Operator-Grade Usability and Workflow Safety
 
-If these are met, the codebase is in a safer position to pursue larger feature bets (patch mode, git isolation, additional providers).
+Goals:
+- make Tod safer/easier to use in real Rust repo workflows without widening core feature surface too much.
+
+Tasks:
+1. Add explicit operator workflow documentation and decision matrix (strict/default/dry-run/resume/force).
+2. Add a minimal git-aware safety mode plan and scaffolding (non-destructive by default).
+3. Continue small extraction from `loop.rs` where behavior parity is straightforward.
+4. Add regression tests for any new workflow-level contracts.
+
+Definition of done:
+- `cargo test` and `cargo clippy -- -D warnings` clean.
+- No behavior regressions to current artifact compatibility.
+- Docs and CLI behavior alignment verified.
+
+Reasoning level by task:
+- 1: Medium
+- 2: High
+- 3: Medium
+- 4: Medium
+
+## Phase 17: Edit Precision and Large-Repo Effectiveness
+
+Goals:
+- improve successful code modification quality on larger, realistic projects.
+
+Tasks:
+1. Introduce patch/diff edit schema path behind explicit contract.
+2. Improve context assembly heuristics for large trees and long diagnostics.
+3. Strengthen extraction/parsing resilience for noisy model outputs.
+
+Definition of done:
+- quality gates pass,
+- no regression in legacy compatibility,
+- measured decrease in broad write-file operations on test fixtures.
+
+Reasoning level by task:
+- 1: XHigh
+- 2: High
+- 3: High
+
+## Phase 18: Provider Flexibility and Operational Telemetry
+
+Goals:
+- reduce vendor dependency and improve operational visibility.
+
+Tasks:
+1. Add second provider implementation behind `LlmProvider`.
+2. Expand telemetry summaries (request timing/retry surfaces/structured output mode).
+3. Add operator-facing docs for backend selection and tradeoffs.
+
+Definition of done:
+- quality gates pass,
+- provider swap path documented and tested,
+- stats remain backward compatible.
+
+Reasoning level by task:
+- 1: High
+- 2: Medium
+- 3: Low-Medium
 
 ---
 
-## 6. Decision Guidance
+## 6. Development Path Decision
 
-When forced to choose between reliability and new capability in the next cycle:
-- choose reliability until observability and schema-coupling debt is retired.
+Reliability vs capability vs distribution:
+- Next: reliability/usability hybrid (operator-grade workflows), then capability.
+- Reason: Tod now has strong core correctness; highest ROI is reducing adoption friction and workflow risk.
 
-Reason:
-- Tod’s core value proposition is trustworthy autonomous iteration in a terminal.
-- Trust erosion from ambiguous logs/metrics or brittle orchestration has higher product cost than delayed feature breadth.
+Is Tod ready for broader external users?
+- Limited yes: for technical users comfortable with Rust + terminal + environment setup.
+- Not fully: still needs stronger workflow isolation and product-level operator guidance.
 
+Biggest current project risk:
+- Practical adoption risk, not core correctness risk.
+- If workflow safety and operator ergonomics lag, strong internals will still be underused.

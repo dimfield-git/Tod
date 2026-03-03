@@ -1,150 +1,207 @@
-# Tod Codebase Assessment (Post-Phase 13)
+# Tod Codebase Assessment (Post-Phase 15)
 
 Date: 2026-03-03  
-Scope reviewed: `src/` (all modules), `README.md`, `AGENTS.md`, `docs/` strategy and phase artifacts.
+Scope reviewed: `src/` modules, CLI/runtime behavior, and current docs surface.
 
 Validation baseline on current tree:
-- `cargo test`: **178 passed, 1 ignored, 0 failed**
+- `cargo test`: **193 passed, 1 ignored, 0 failed**
 - `cargo clippy -- -D warnings`: **clean**
 
 ---
 
 ## 1. Overall Assessment
 
-Tod is currently a robust prototype-stage terminal agent with strong safety and good runtime determinism for resumed runs. Phase 13 closed three major correctness gaps (checkpoint fingerprint freshness, resume-profile reuse, and same-size drift blind spots) and hardened run-id uniqueness.
+Tod is now a reliable prototype-grade terminal Rust coding agent with strong determinism and safety discipline.
+
+Key state after Phase 15:
+- Module boundary cleanup landed: `log_schema.rs` (types), `loop_io.rs` (persistence + run identity), `loop.rs` (orchestration).
+- Run identity allocation is centralized and consistent across normal and plan-error flows.
+- Resume fingerprint compatibility logic is now isolated and table-tested.
+- Legacy artifact compatibility remains intact.
 
 Current quality profile:
-- **Correctness:** strong for run-loop and resume semantics.
-- **Safety:** strong path-validation and transactional edit model.
-- **Observability:** strong after planning; partial blind spot before `RunState` exists.
-- **Maintainability:** acceptable, with one major hotspot (`src/loop.rs`).
-- **Test confidence:** high (broad and deep unit coverage).
+- Correctness: strong for loop, resume, checkpointing, and artifact semantics.
+- Safety: strong path-jailing + transactional edit apply model.
+- Observability: strong terminal-path coverage, including plan-error `final.json`.
+- Maintainability: materially improved, but `loop.rs` is still the largest concentration hotspot.
+- Operator usefulness: viable for controlled terminal workflows; still missing some productization features for broader adoption.
 
 ---
 
-## 2. Architecture and Module Boundaries
+## 2. How Tod Can Be Used Today
+
+### Current practical usage modes
+
+1. Assisted local Rust maintenance in a sandboxed project
+- Use `tod run --project <path> "<goal>"` for targeted bugfix/refactor tasks.
+- Best fit: medium-scoped tasks where `cargo` diagnostics drive retry loops.
+
+2. CI-like strict quality enforcement during autonomous edits
+- Use `--strict` to run `fmt --check`, `clippy -D warnings`, and tests each attempt.
+- Best fit: teams requiring style/lint/test gates on every iteration.
+
+3. Safe planning and dry-run review mode
+- Use `--dry-run` to generate/validate/log edits without filesystem mutation.
+- Best fit: prompt tuning, trust-building, and failure forensics.
+
+4. Interrupted-run continuity
+- Use `resume` from `.tod/state.json` with deterministic profile reuse.
+- Best fit: long-running sessions, terminal interruptions, process restarts.
+
+### Operational options available now
+
+- Reliability-oriented operation:
+  - strict mode + token cap + lower `--max-iters`
+- Cost-oriented operation:
+  - default mode + explicit `--max-tokens`
+- Diagnostic operation:
+  - dry-run + status/stats inspection of artifacts
+- Recovery operation:
+  - `resume` and optional `--force` for drift override
+
+---
+
+## 3. What Is Still Needed for Tod to Be Broadly Useful as a Rust Agent
+
+Tod is already useful for controlled local workflows, but broad practical adoption needs several additions:
+
+1. Safer workspace isolation and review workflow
+- Missing: built-in git branch/worktree isolation and patch preview/approval loop.
+- Why it matters: operators need reversible, auditable edit boundaries beyond transactional file rollback.
+
+2. Better edit precision for larger codebases
+- Missing: patch/diff-oriented edit mode (today edits are `write_file` / `replace_range`).
+- Why it matters: large-file rewrites are costlier and riskier; diff-first workflows scale better.
+
+3. Provider flexibility
+- Missing: alternate provider support (OpenAI/local/offline adapters).
+- Why it matters: operational cost, reliability, and deployment flexibility.
+
+4. Stronger context and extraction resilience
+- Missing: more robust JSON extraction for noisy/multi-block model output and richer large-repo context strategy.
+- Why it matters: real-world prompts and larger repos increase response variance and context pressure.
+
+5. Distribution and operator ergonomics
+- Missing: packaged release path, setup docs for non-developer users, and clearer runbook-style troubleshooting docs.
+- Why it matters: current usage assumes developer-level comfort with Rust + environment setup.
+
+---
+
+## 4. Architecture and Boundary Review
 
 ### Boundary quality (current)
 
 | Area | State | Notes |
 |---|---|---|
-| CLI/config boundary | Good | `cli.rs` cleanly maps command surface to `RunConfig`. |
-| Planner/editor/runner/reviewer separation | Good | Responsibilities are clear and mostly decoupled. |
-| Safety validation boundary | Good | `schema.rs` is the authoritative pre-apply gate. |
-| Orchestration boundary | Medium | `loop.rs` is functionally coherent but over-concentrated. |
-| Stats/log schema boundary | Medium-Low | `stats.rs` imports loop log/state types directly. |
+| CLI/config boundary | Good | `cli.rs` cleanly maps command surface to immutable `RunConfig`. |
+| Planner/editor/runner/reviewer separation | Good | Responsibilities are explicit and mostly decoupled. |
+| Safety validation boundary | Strong | `schema.rs` remains canonical pre-apply guardrail. |
+| Persistence boundary | Improved | `loop_io.rs` now owns run-id allocation and write helpers. |
+| Log-schema boundary | Improved | `log_schema.rs` is data+serde only. |
+| Orchestration boundary | Medium | `loop.rs` still carries heavy logic and large test concentration. |
 
-### Key concentration points
-- `src/loop.rs` currently carries orchestration, state schema, log schema, checkpointing, fingerprinting, resume policy, and a very large test suite.
-- `src/stats.rs` depends on loop-owned structs (`AttemptLog`, `PlanLog`, `FinalLog`, `RunState`), creating cross-module coupling friction for schema changes.
+### Main concentration point
 
----
-
-## 3. Correctness and Determinism
-
-### What is now strong
-- Checkpoint fingerprint is refreshed at runtime checkpoint call-sites in the main step loop.
-- Resume execution profile is persisted and reused (`mode`, `dry_run`, `max_runner_output_bytes`) with legacy compatibility fallback.
-- Drift fingerprint is versioned; v2 content-aware hash catches same-size edits.
-- Legacy v1 checkpoint compatibility is explicitly handled in resume logic.
-- Run-id collisions are mitigated with fractional time + suffix fallback while preserving lexical sort semantics.
-
-### Remaining correctness/behavior risks
-- Planner-stage failure occurs before `RunState` initialization, so there is no run artifact for those failures.
-- LLM request accounting semantics still depend on available usage fields in current logging/stat logic paths.
+- `src/loop.rs` remains the largest module and central change-risk surface.
+- Decomposition improved in Phase 15 but future refactors should continue reducing orchestration blast radius.
 
 ---
 
-## 4. Safety Model Review
+## 5. Correctness and Determinism
+
+### Strong invariants now
+
+- Checkpoint writes are best-effort with atomic tmp+rename.
+- Plan/final/attempt logs are best-effort and stable in path contract.
+- Planner-stage failures produce terminal `final.json` artifacts.
+- Run identity allocation is single-source and collision-safe.
+- Fingerprint compatibility logic is pure and explicitly tested by matrix.
+- Resume profile reuse preserves originating execution semantics.
+
+### Residual risks
+
+- `--force` can override fingerprint mismatch by design; this is operationally necessary but should stay clearly documented.
+- Context budget truncation can omit useful files/lines in large repos; behavior is safe but may reduce fix quality.
+
+---
+
+## 6. Safety Model
 
 ### Strengths
-- Path validation blocks absolute paths, traversal, lexical escape, and existing-ancestor symlink escape.
-- Edit apply is transactional with snapshot + rollback.
-- Runner executes fixed cargo stage commands, not model-provided shell commands.
-- UTF-8 truncation and preview helpers are consistently defensive.
+
+- Path validation rejects absolute paths, traversal, and symlink-escape patterns.
+- Edits apply transactionally with rollback attempts.
+- Runner executes static cargo stages (no model-driven shell command execution).
+- UTF-8 truncation/preview behavior is defensive and tested.
 
 ### Residual risk
-- TOCTOU remains theoretically possible if filesystem structure changes between validation and apply (expected for this threat model; acceptable in prototype, worth documenting).
-- Rollback failure can still leave partial filesystem state; this is surfaced clearly as `ApplyError::Rollback`.
+
+- TOCTOU remains theoretically possible between validation and apply under concurrent filesystem mutation.
+- Rollback failures are typed and surfaced but can still leave partial state in worst-case filesystem errors.
 
 ---
 
-## 5. Observability and Logging
+## 7. Observability and Stats
 
 ### Strong areas
-- Per-attempt structured logs and terminal `final.json` support good forensic analysis.
-- Stats correctly prefers `final.json` as run-outcome source of truth for modern runs.
-- Legacy compatibility is preserved via serde defaults and fallback heuristics.
 
-### Gap to address next
-- No structured artifact path for failures before planning succeeds and before `RunState` exists.
+- `final.json` is source of truth when present.
+- Plan-error-only artifact runs are summarizable.
+- Legacy compatibility defaults are preserved (attempt stage defaults, fingerprint/profile defaults).
+- Request counting semantics (plan=1 + edits=attempt count) are stable in stats.
 
----
+### Gaps still worth improving
 
-## 6. Testing and Verification Depth
-
-### Coverage profile
-- Total tests passing: 178 (+1 ignored integration smoke test).
-- Highest test density in critical runtime modules:
-  - `loop.rs` (42)
-  - `schema.rs` (28)
-  - `runner.rs` (19)
-  - `stats.rs` (19)
-  - `llm.rs` (15)
-
-### Confidence assessment
-- High confidence in regression prevention for core runtime behavior.
-- Good compatibility testing for legacy logs and checkpoints.
-
-### Worth adding in upcoming phase
-- Planner-stage failure artifact behavior tests (once artifact strategy is implemented).
-- Additional accounting tests for explicit request-count semantics when usage fields are absent.
+- Richer operator telemetry is limited (no per-stage latency distribution, retry timing, or model response quality signals).
+- Single-run and multi-run summaries are functional but still text-oriented; no structured export format yet.
 
 ---
 
-## 7. Documentation and Operational Parity
+## 8. Module-by-Module Findings
 
-### Current state
-- Core docs now largely aligned with implemented Phase 13 behavior.
-- `AGENTS.md` and `README.md` were updated to reflect v2 fingerprinting, resume profile semantics, and run-id hardening.
-
-### Ongoing risk
-- Architecture and strategy docs can drift quickly if not updated as part of every phase definition of done.
-
-Recommendation:
-- Keep docs update as an explicit acceptance item in every future phase file.
-
----
-
-## 8. Priority Findings (Ordered)
-
-1. **Maintainability hotspot in `loop.rs`**  
-Impact: medium-high over time (review cost, regression surface).  
-Recommendation: phase-scoped extraction by concern, starting with log schema/persistence helpers.
-
-2. **Stats/log schema coupling to loop internals**  
-Impact: medium (schema evolution friction).  
-Recommendation: introduce neutral log-schema module consumed by both loop and stats.
-
-3. **Pre-RunState observability gap (planner-stage failures)**  
-Impact: medium (forensic incompleteness).  
-Recommendation: add a minimal terminal artifact path for planner failures.
-
-4. **Metrics semantics clarity (request counts vs usage presence)**  
-Impact: medium (operator trust in reporting).  
-Recommendation: make counting semantics explicit and deterministic independent of usage payload presence.
+- `main.rs`: stable dispatcher; init helper still embedded but acceptable.
+- `cli.rs`: clear, deterministic parsing; good tests.
+- `config.rs`: clean immutable runtime settings.
+- `context.rs`: robust byte-budget handling; non-UTF8 files still a practical limitation.
+- `planner.rs`: strict semantic validation is a strength.
+- `editor.rs`: strong typed error bridge from model output to schema validation.
+- `schema.rs`: strongest safety backbone in the codebase.
+- `runner.rs`: transactional apply + deterministic pipeline staging are solid.
+- `reviewer.rs`: simple and predictable decision policy.
+- `llm.rs`: retry containment is correct; provider surface intentionally minimal.
+- `log_schema.rs`: now correctly scoped to pure data and serde defaults.
+- `loop_io.rs`: clean persistence boundary and run-id single source.
+- `loop.rs`: robust orchestration behavior, still the major complexity center.
+- `stats.rs`: compatibility-aware summarization is strong; room for richer analytics.
+- `util.rs`, `test_util.rs`: small and appropriate.
 
 ---
 
-## 9. Recommended Next-Step Direction
+## 9. Priority Findings (Ordered)
 
-Short-term direction should prioritize **operational integrity and maintainability**, not new user-facing features.
+1. Productization gap (distribution + workflow isolation)
+- Impact: high on real-world adoption.
+- Scope: docs/runbooks + git isolation strategy + release ergonomics.
 
-Recommended next phase scope:
-- decouple log schema from loop internals,
-- close planner-stage observability gap,
-- improve aggregate outcome fidelity in stats,
-- keep compatibility with legacy logs/checkpoints.
+2. Edit precision/scalability gap for larger repos
+- Impact: medium-high on correctness/cost in real projects.
+- Scope: patch/diff workflow and richer context strategy.
 
-This preserves current correctness momentum and reduces risk in future feature work.
+3. Orchestration complexity concentration in `loop.rs`
+- Impact: medium-high on long-term maintenance risk.
+- Scope: continued phase-scoped extractions and targeted regression tests.
 
+4. Provider monoculture
+- Impact: medium on reliability/cost flexibility.
+- Scope: pluggable provider adapters behind existing trait boundary.
+
+---
+
+## 10. Recommended Direction
+
+Tod should now shift from structural hardening to practical operator value while preserving safety invariants.
+
+Recommended next-phase posture:
+- Reliability + usability first (not broad feature explosion).
+- Prioritize workflows that make Tod safely usable on real Rust repos by more than the primary developer.
+- Keep each phase behavior-preserving unless explicitly targeted for new capability.

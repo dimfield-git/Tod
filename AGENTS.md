@@ -34,6 +34,7 @@ Platform assumptions:
 
 Current phase state:
 - Phases 1–15 complete
+- Phase 16 in progress
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -60,6 +61,7 @@ src/
   test_util.rs    shared temp sandbox helper (tests only)
 
 docs/
+  runbook.md                        operator decision guidance (Phase 16)
   phase*-implementation-*.md        phase implementation logs
   codebase-assessment.md            architecture and risk assessment
   strategic-plan.md                 roadmap and phase sequencing
@@ -105,8 +107,13 @@ Observability invariants:
 
 Module boundary invariants:
 - `log_schema.rs` owns log struct types and serde defaults only. No IO, no formatting.
-- `loop_io.rs` owns persistence primitives and run identity allocation. All writes are best-effort (warn on failure, never propagate). Checkpoint writes use atomic tmp+rename to prevent corruption.
+- `loop_io.rs` owns persistence primitives and run identity allocation. All writes are best-effort (never propagate). Some call sites warn on failure; others may be silent. Preserve current warning/silent behavior per call site. Checkpoint writes use atomic tmp+rename to prevent corruption.
 - `loop.rs` owns orchestration flow. Delegates persistence and identity to `loop_io.rs`.
+
+Workflow safety invariants:
+- `run()` emits an informational dirty-workspace warning to stderr when the target project has uncommitted git changes. This warning is non-blocking — it never prevents a run.
+- The dirty-workspace check is silent when git is unavailable or the project is not a git repo.
+- The dirty-workspace check does not apply to `resume` (fingerprint check covers drift) or `--dry-run` (no mutation).
 
 Request counting semantics:
 - A request is one logical LLM intent: one plan call = 1 request, one edit call = 1 request.
@@ -140,6 +147,7 @@ Request counting semantics:
 | 13 | Resume determinism + fingerprint v2 + run-id hardening | Done |
 | 14 | Observability/schema cohesion and metrics fidelity | Done |
 | 15 | Loop surface reduction + compatibility hardening | Done |
+| 16 | Operator usability + workflow safety | In progress |
 
 ## Phase 15 Outcomes
 
@@ -156,3 +164,22 @@ Design decisions locked for Phase 15:
 - No new user-facing capabilities this phase.
 
 Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this maintainability and compatibility work is complete.
+
+## Phase 16 Scope (Locked)
+
+Primary objective:
+- Improve operator usability and real-workflow safety so Tod is practical for daily Rust maintenance tasks.
+- Keep core safety and compatibility invariants intact.
+- Continue reducing orchestration maintenance risk through small, behavior-preserving extractions.
+
+Locked deliverables:
+1. **Operator runbook** (`docs/runbook.md`): mode decision matrix, cap tuning guidance, resume/force guidance, failure recovery decision tree. Documentation only — no code changes.
+2. **Dirty-workspace warning**: informational stderr warning in `run()` when target project has uncommitted git changes. Non-blocking, silent when git unavailable, skipped for resume and dry-run.
+3. **Cap-check extraction**: extract `check_iteration_cap` and `check_token_cap` as pure `&RunState -> Option<LoopError>` helpers. Behavior-preserving refactor of `run_from_state` and `run`.
+4. **JSON stats output**: `--json` flag on `tod stats` and `tod status` for machine-readable output via `serde_json::json!`. Default human-readable output unchanged.
+
+Design decisions locked for Phase 16:
+- The dirty-workspace check uses `git -C <project_root> status --porcelain` via `std::process::Command`. No new dependencies.
+- Cap-check helpers are pure functions with no side effects. Surrounding checkpoint/log/return patterns stay inline.
+- JSON output is compact single-line format. No changes to `RunSummary` or `MultiRunSummary` struct definitions.
+- No major new features this phase (no patch mode, no provider expansion, no git worktree engine).
