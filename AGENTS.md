@@ -12,7 +12,7 @@
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
 - **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current instructions (see [`PHASE11.md`](PHASE11.md)) → Future phases.
+- **Priority order:** Current instructions (see [`PHASE12.md`](PHASE12.md)) → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
@@ -21,44 +21,9 @@ Tod is a minimal Rust coding agent that operates from the terminal. It plans wor
 
 **"Done" means:** `cargo test` passes (baseline: 160 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–11 complete.
+Linux-only. No GUI dependencies. Phases 1–11 complete, Phase 12 next.
 
 Core design principle: **"LLM generates, everything else constrains."**
-
-## Phases
-
-| Phase | Scope | Status |
-|-------|-------|--------|
-| 1 | Core architecture skeleton — module layout, core types (`RunConfig`, `EditAction`, `RunState`) | ✅ Done |
-| 2 | JSON edit schema — `WriteFile`/`ReplaceRange` actions, path validation, content size limits | ✅ Done |
-| 3 | LLM layer — `LlmProvider` trait, Anthropic implementation, JSON extraction with fence/preamble handling | ✅ Done |
-| 4 | Execution loop — plan → edit → apply → run → review cycle, iteration caps | ✅ Done |
-| 5 | Runner — cargo pipeline execution, transactional edit apply with rollback, strict mode (`fmt --check` + clippy) | ✅ Done |
-| 6 | Logging & reproducibility — `.tod/` directory, `state.json` checkpoint, structured attempt/plan logs, workspace fingerprint, resume with drift detection, status command | ✅ Done |
-| 7 | Observability — `stats.rs` module, read-only analysis from structured logs, per-run and cross-run metrics, CLI `stats` command | ✅ Done |
-| 8 | Hardening + budget enforcement — TempSandbox extraction, atomic checkpoints, explicit truncation flag, provider config via env, token tracking + cap | ✅ Done |
-| 9 | Working prototype — end-to-end live validation, context window management, LLM retry, init command, final packaging | ✅ Done |
-| 10 | External usability — naming consistency, `--project` flag for status/stats, shared utilities, structured errors, LICENSE | ✅ Done |
-| 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
-
-**Current instructions: see [`PHASE11.md`](PHASE11.md)**
-
-## Golden Path Commands
-
-```
-Build:      cargo build
-Test:       cargo test
-Lint:       cargo clippy -- -D warnings
-Format:     cargo fmt --all --check
-Strict:     cargo fmt --all --check → cargo clippy -- -D warnings → cargo test
-Run:        cargo run -- run --project /path/to/project "goal"
-Dry run:    cargo run -- run --dry-run "goal"
-Init:       cargo run -- init <name>
-Status:     cargo run -- status
-Stats:      cargo run -- stats --last 5
-```
-
-No external system dependencies beyond a Rust toolchain.
 
 ## Project Map
 
@@ -85,6 +50,8 @@ docs/
   live-run-log.md         Phase 9 live run transcript and outcomes
   phase6-design.md        Phase 6 design document (logging, checkpoint, resume)
   changes-2026-02-23.md   Detailed change log for loop wiring session
+  codebase-assessment.md  Post-Phase-10 architecture and correctness analysis
+  strategic-plan.md       Prioritized remaining work and phase roadmap
 ```
 
 **Runtime output directory** (created by Tod when running against a target project):
@@ -109,9 +76,23 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Do not change CLI flag names or semantics without approval.
 - Do not change JSON schema tags (`write_file`, `replace_range`) without approval.
 - Edit application is transactional: snapshot before mutation, rollback on any failure.
-- Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`). All path validation is relative to that.
-- State structs (`RunState`, `StepState`) derive `Serialize` + `Deserialize`. Checkpoint writes to `.tod/state.json` atomically (tmp + rename); resume loads from it. Fingerprint detects workspace drift between runs.
-- Context building lives in `context.rs` with explicit byte budgets. Planner context (128 KiB), step context (64 KiB), retry context (8 KiB). All truncation is UTF-8 safe.
-- LLM retry (429, 500, 502, 503, network errors) is handled inside `AnthropicProvider::complete()` with exponential backoff + jitter. The orchestration loop never sees transient transport failures.
+- Path safety: relative-only, no `..`, no absolute, symlink-aware escape guard. Project root comes from `RunConfig.project_root` (set via CLI `--project`).
 - Resume must not issue LLM calls when checkpoint usage already meets or exceeds the token cap.
 - Stats request counts reflect all billed API calls (planner + editor). Planner usage is recorded in `plan.json`. Legacy logs without planner usage are handled gracefully.
+
+## Phase History
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | Scaffolding — CLI, config, schema, path validation | ✅ Done |
+| 2 | LLM integration — provider trait, Anthropic impl, planner JSON extraction | ✅ Done |
+| 3 | Editor — edit generation, WriteFile + ReplaceRange apply | ✅ Done |
+| 4 | Runner — cargo pipeline, output capture, truncation | ✅ Done |
+| 5 | Loop — full orchestration, retry, abort, iteration caps | ✅ Done |
+| 6 | Logging — .tod/ directory, checkpoint, attempt logs, resume | ✅ Done |
+| 7 | Strict mode — gated cargo fmt/clippy, reviewer logic | ✅ Done |
+| 8 | Hardening — TempSandbox extraction, atomic checkpoint, token budget, context caps | ✅ Done |
+| 9 | Working prototype — live run validation, context.rs, retry backoff, init command | ✅ Done |
+| 10 | External usability — naming consistency, --project flag, shared utilities, structured errors, LICENSE | ✅ Done |
+| 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
+| 12 | Failure observability — terminal outcome log, pre-runner error logging, stats outcome fidelity | 🔜 Next |
