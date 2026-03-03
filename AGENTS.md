@@ -1,4 +1,4 @@
-# AGENTS.md — Tod
+# AGENTS.md -- Tod
 
 ## Operating Principles
 
@@ -33,8 +33,8 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1–16 complete
-- Phase 17 next
+- Phases 1-16 complete
+- Phase 17 in progress
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -53,7 +53,7 @@ src/
   runner.rs       transactional edit apply + cargo stage execution
   reviewer.rs     proceed/retry/abort policy
   llm.rs          LLM provider trait + Anthropic implementation + retries
-  log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog) — pure data + serde
+  log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog) -- pure data + serde
   loop_io.rs      persistence primitives, run identity allocation, best-effort JSON writers
   loop.rs         orchestration state machine + checkpointing + resume
   stats.rs        read-only run/log summarization and formatting
@@ -62,6 +62,7 @@ src/
 
 docs/
   runbook.md                        operator decision guidance (Phase 16)
+  ux-audit-2026-03-03.md            UX gap analysis and recommendations
   phase*-implementation-*.md        phase implementation logs
   codebase-assessment.md            architecture and risk assessment
   strategic-plan.md                 roadmap and phase sequencing
@@ -111,7 +112,7 @@ Module boundary invariants:
 - `loop.rs` owns orchestration flow. Delegates persistence and identity to `loop_io.rs`.
 
 Workflow safety invariants:
-- `run()` emits an informational dirty-workspace warning to stderr when the target project has uncommitted git changes. This warning is non-blocking — it never prevents a run.
+- `run()` emits an informational dirty-workspace warning to stderr when the target project has uncommitted git changes. This warning is non-blocking -- it never prevents a run.
 - The dirty-workspace check is silent when git is unavailable or the project is not a git repo.
 - The dirty-workspace check does not apply to `resume` (fingerprint check covers drift) or `--dry-run` (no mutation).
 
@@ -148,6 +149,7 @@ Request counting semantics:
 | 14 | Observability/schema cohesion and metrics fidelity | Done |
 | 15 | Loop surface reduction + compatibility hardening | Done |
 | 16 | Operator usability + workflow safety | Done |
+| 17 | Observability fidelity + orchestration maintainability + operator UX | In progress |
 
 ## Phase 15 Outcomes
 
@@ -163,8 +165,6 @@ Design decisions locked for Phase 15:
 - All persistence writes are best-effort (warn, don't propagate). Checkpoint writes must preserve the atomic tmp+rename pattern.
 - No new user-facing capabilities this phase.
 
-Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this maintainability and compatibility work is complete.
-
 ## Phase 16 Outcomes
 
 Completed outcomes:
@@ -179,14 +179,26 @@ Phase 16 locked decisions retained:
 - `log_schema.rs` remains pure data + serde.
 - No major feature-surface expansion (no patch mode, provider expansion, or git worktree orchestration engine).
 
-## Phase 17 Priority Handoff
+## Phase 17 Scope (Locked)
 
-Priority areas for next phase:
-1. Improve stats observability depth while preserving legacy artifact compatibility.
-2. Continue reducing orchestration complexity in `loop.rs` through small pure-helper extractions.
-3. Add narrowly scoped operator UX improvements that do not expand execution risk or dependency surface.
+Primary objective:
+- Strengthen observability contracts and compatibility confidence.
+- Continue reducing orchestration complexity in `loop.rs`.
+- Make Tod communicative: lifecycle progress messaging, actionable errors, enriched completion output.
+- Improve first-time operator experience through CLI help enrichment.
 
-Guardrails for handoff:
-- Preserve best-effort persistence behavior in `loop_io.rs`.
-- Preserve resume compatibility for legacy checkpoints and artifacts.
-- Keep deterministic, table-testable decision logic where possible.
+Locked deliverables:
+1. **Observability hardening + compatibility audit**: tighten JSON/human output contract tests, audit edge-outcome summaries, document machine-readable output expectations.
+2. **Orchestration extraction**: continue pure-helper decomposition of `loop.rs` decision logic with table tests.
+3. **Run lifecycle messaging**: startup banner in `main.rs`, plan/step/attempt/review progress messages in `loop.rs`, resume confirmation. All stderr, all cosmetic, no control flow impact.
+4. **Actionable errors + enriched output**: append operator guidance to `LoopError::Display`, extend `LoopReport` with token/log fields, enrich success output in `main.rs`. Populate from run-level accumulators in `RunState`, not per-attempt values.
+5. **CLI help enrichment**: add operational context to clap help attributes (`--max-iters`, `--strict`, `--dry-run`, `--max-tokens`, `--force`, `--json`).
+
+Design decisions locked for Phase 17:
+- All lifecycle messages go to stderr via `eprintln!`. Stdout remains clean for piping and `--json`.
+- No `--quiet` flag this phase.
+- Lifecycle messages are best-effort cosmetic output: they must never affect control flow, return values, or exit codes.
+- Error guidance is appended to `LoopError::Display`, not separate prints.
+- `LoopReport` field additions are backward-compatible (internal struct, not serialized).
+- Do not thread `run_id` through error types this phase.
+- No major new features (no patch mode, no provider expansion, no git worktree engine).

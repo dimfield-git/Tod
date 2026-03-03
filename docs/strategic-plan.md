@@ -1,187 +1,121 @@
-# Tod Strategic Plan (Post-Phase 15)
+# Tod Strategic Plan (Post-Phase 16)
 
-Date: 2026-03-03  
+Date: 2026-03-03
 Baseline validated on current tree:
-- `cargo test`: **193 passed, 1 ignored**
+- `cargo test`: **203 passed, 1 ignored**
 - `cargo clippy -- -D warnings`: **clean**
 
 ---
 
 ## 1. Strategic Objective
 
-Evolve Tod from a strong prototype into a practical, trustworthy Rust coding agent for day-to-day terminal workflows.
+Evolve Tod from a strong prototype into a dependable daily Rust maintenance agent with:
+1. constrained deterministic execution,
+2. high compatibility confidence,
+3. operator-grade observability and workflow safety.
 
 Near-term objective:
-- keep reliability invariants intact,
-- improve real-world usability and operator trust,
-- add capability only where it directly increases successful Rust task completion.
+- deepen reliability and maintainability,
+- improve machine-usable and operator-usable observability,
+- defer broad feature-surface expansion until core loop complexity is reduced further.
 
 ---
 
-## 2. Agent Usage Model and Options
+## 2. Current Position (After Phase 16)
 
-## How the agent will be used
+What is now true:
+- Phase 16 usability/safety deliverables are complete.
+- Operator runbook and mode guidance exist.
+- Dirty-workspace warning protects real workflow awareness without blocking runs.
+- JSON output for `status`/`stats` exists for automation consumers.
 
-1. Solo developer workflow
-- Run Tod on a local Rust project for scoped tasks (bugs, refactors, focused feature increments).
-- Use strict mode when code quality policy matters, dry-run when reviewing intent first.
+What remains the main risk:
+- `src/loop.rs` orchestration concentration and long-term change blast radius.
 
-2. Team-internal assistant workflow
-- Use Tod on prepared branches/worktrees for repetitive maintenance tasks.
-- Inspect `.tod/logs` artifacts for run auditability and postmortem analysis.
+---
 
-3. Controlled CI-adjacent automation (future-ready)
-- Use deterministic caps and strict pipelines for controlled auto-fix experiments.
-- Resume support helps handle interrupted sessions without losing context.
+## 3. Path Options From Here
 
-## Options we have next
+### Path A: Reliability + Observability Depth (recommended)
+- Continue behavior-preserving orchestration extraction.
+- Strengthen stats/output contract tests and operational telemetry quality.
+- Keep compatibility invariants strict.
 
-Path A: Reliability-first productization (recommended next)
-- Improve isolation, runbook docs, and operator ergonomics before larger capability jumps.
+### Path B: Capability expansion first
+- Add patch-mode/provider expansion immediately.
+- Higher upside, higher regression risk while orchestration complexity remains concentrated.
 
-Path B: Capability-first expansion
-- Add patch mode and advanced planning/review logic first; higher upside, higher regression risk.
-
-Path C: Distribution-first
-- Focus on packaging and adoption ergonomics now; risks exposing rough edges before workflow hardening.
+### Path C: Distribution-first
+- Push packaging/adoption before deeper internals hardening.
+- Risks exposing rough edges to wider users prematurely.
 
 Recommendation:
-- Execute Path A now, then blend in selected Path B items once operational safety/usability is stronger.
+- Execute Path A for Phase 17, then reassess capability expansion.
 
 ---
 
-## 3. Remaining Work Inventory
+## 4. Work Inventory
 
 ## Must
 
 | Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Git-safe workflow mode (branch/worktree guardrails) | Makes real repo usage safer and reversible | Med-High | M-L | `loop.rs`, new git integration module, docs |
-| Operator runbook and failure-recovery docs | Converts prototype into usable tool for non-authors | Low | S-M | `README.md`, `docs/`, AGENTS phase docs |
-| Continue `loop.rs` surface reduction with behavior parity | Lowers regression risk as features grow | Medium | M | `loop.rs`, `loop_io.rs`, tests |
-| Context robustness for larger Rust repos | Improves success rate on realistic codebases | Medium | M | `context.rs`, `planner.rs`, `editor.rs` |
+| Continue `loop.rs` surface reduction (pure-helper extractions) | Lower regression risk and review complexity | Medium | M | `loop.rs`, tests |
+| Strengthen observability contracts (human + JSON stability) | Better operator trust and automation safety | Low-Med | S-M | `stats.rs`, CLI/tests/docs |
+| Preserve compatibility constraints with explicit regression checks | Prevent legacy artifact drift | Medium | S-M | `stats.rs`, `loop_io.rs`, tests |
+| Define UX integration seam for future input | Enables later UX improvements without rework | Low | S | docs + phase planning |
 
 ## Should
 
 | Item | Payoff | Risk | Effort | Touch points |
 |---|---|---|---|---|
-| Patch/diff edit contract (non-destructive preference) | Better edit precision and reviewability | Medium | M-L | `schema.rs`, `editor.rs`, `runner.rs` |
-| Enhanced stats output (structured export + richer counters) | Better operational visibility | Low-Med | S-M | `stats.rs`, docs |
-| Provider abstraction expansion (second backend) | Cost/reliability flexibility | Medium | M | `llm.rs`, config/CLI/docs |
+| Add richer run-level telemetry summaries | Better root-cause and trend analysis | Medium | M | `stats.rs`, log artifacts |
+| Add additional contract tests for terminal outcomes and JSON keys | Reduce accidental output drift | Low | S-M | tests |
 
-## Nice
+## Deferred (Post-Phase 17)
 
-| Item | Payoff | Risk | Effort | Touch points |
-|---|---|---|---|---|
-| Optional planner self-check/reflection pass | Better plan quality on ambiguous goals | Medium | M | `planner.rs`, `loop.rs` |
-| Configurable runner stage presets | Better adaptation to project conventions | Medium | M | `config.rs`, `runner.rs`, CLI |
-
-## Future
-
-| Item | Payoff | Risk | Effort | Touch points |
-|---|---|---|---|---|
-| Remote/daemon mode | Enables service workflows | High | L | architecture-wide |
-| Multi-language expansion beyond Rust | Larger market scope | High | L | prompts/schema/runner/context |
+| Item | Reason deferred |
+|---|---|
+| Patch/diff edit contract | Higher behavior-surface risk; better after loop/stats hardening. |
+| Multi-provider expansion | Better after telemetry and orchestration simplification. |
+| Git worktree orchestration engine | Product-surface expansion, not immediate reliability priority. |
 
 ---
 
-## 4. What Is Left for Tod to Be a Functional, High-Utility Rust Agent
+## 5. Proposed Roadmap
 
-Tod already functions. What remains is scaling practical utility safely:
+## Phase 17 (next): Observability Fidelity + Orchestration Maintainability
 
-1. Safe application boundary in real repos
-- Add first-class git isolation strategy and explicit approval/review loop options.
+Primary outcomes:
+1. Improve machine-consumable observability and contract confidence.
+2. Continue small, behavior-preserving decomposition of orchestration logic.
+3. Keep all safety and compatibility invariants intact.
+4. Reserve an explicit UX input slot for requirements to be supplied later.
 
-2. Higher-confidence edit precision
-- Introduce patch/diff-first mode to reduce broad file rewrites.
+Definition of done:
+- Quality gates clean.
+- No compatibility regression for legacy artifacts/checkpoints.
+- Output contract behavior (human + JSON) documented and test-protected.
 
-3. Better large-project context handling
-- Improve context selection and summarization for bigger trees and noisy diagnostics.
+## Phase 18 (candidate): Precision and Scale Improvements
 
-4. Better operator experience
-- Clear runbooks, troubleshooting, and decision guidance (strict vs default vs dry-run, when to resume with `--force`, token cap tuning).
+Candidate outcomes:
+1. Context relevance improvements for larger repos.
+2. Measured reduction in broad rewrite patterns.
+3. Potential preparation work for future patch-mode contract.
 
-5. Flexibility in model backend
-- Add at least one additional provider to reduce single-vendor dependency.
+## Phase 19 (candidate): Backend Flexibility
+
+Candidate outcomes:
+1. Provider optionality.
+2. Operational docs for backend selection.
+3. Telemetry consistency across providers.
 
 ---
 
-## 5. Proposed Phase Roadmap (Next 3 Phases)
+## 6. Decision Summary
 
-## Phase 16: Operator-Grade Usability and Workflow Safety
+Tod is now robust enough that the highest ROI is disciplined operational depth, not rapid feature breadth.
 
-Goals:
-- make Tod safer/easier to use in real Rust repo workflows without widening core feature surface too much.
-
-Tasks:
-1. Add explicit operator workflow documentation and decision matrix (strict/default/dry-run/resume/force).
-2. Add a minimal git-aware safety mode plan and scaffolding (non-destructive by default).
-3. Continue small extraction from `loop.rs` where behavior parity is straightforward.
-4. Add regression tests for any new workflow-level contracts.
-
-Definition of done:
-- `cargo test` and `cargo clippy -- -D warnings` clean.
-- No behavior regressions to current artifact compatibility.
-- Docs and CLI behavior alignment verified.
-
-Reasoning level by task:
-- 1: Medium
-- 2: High
-- 3: Medium
-- 4: Medium
-
-## Phase 17: Edit Precision and Large-Repo Effectiveness
-
-Goals:
-- improve successful code modification quality on larger, realistic projects.
-
-Tasks:
-1. Introduce patch/diff edit schema path behind explicit contract.
-2. Improve context assembly heuristics for large trees and long diagnostics.
-3. Strengthen extraction/parsing resilience for noisy model outputs.
-
-Definition of done:
-- quality gates pass,
-- no regression in legacy compatibility,
-- measured decrease in broad write-file operations on test fixtures.
-
-Reasoning level by task:
-- 1: XHigh
-- 2: High
-- 3: High
-
-## Phase 18: Provider Flexibility and Operational Telemetry
-
-Goals:
-- reduce vendor dependency and improve operational visibility.
-
-Tasks:
-1. Add second provider implementation behind `LlmProvider`.
-2. Expand telemetry summaries (request timing/retry surfaces/structured output mode).
-3. Add operator-facing docs for backend selection and tradeoffs.
-
-Definition of done:
-- quality gates pass,
-- provider swap path documented and tested,
-- stats remain backward compatible.
-
-Reasoning level by task:
-- 1: High
-- 2: Medium
-- 3: Low-Medium
-
----
-
-## 6. Development Path Decision
-
-Reliability vs capability vs distribution:
-- Next: reliability/usability hybrid (operator-grade workflows), then capability.
-- Reason: Tod now has strong core correctness; highest ROI is reducing adoption friction and workflow risk.
-
-Is Tod ready for broader external users?
-- Limited yes: for technical users comfortable with Rust + terminal + environment setup.
-- Not fully: still needs stronger workflow isolation and product-level operator guidance.
-
-Biggest current project risk:
-- Practical adoption risk, not core correctness risk.
-- If workflow safety and operator ergonomics lag, strong internals will still be underused.
+Recommended immediate direction:
+- Phase 17 should reinforce observability and maintainability while preserving strict safety/compatibility guarantees, and should include reserved room for UX requirements to be integrated once supplied.
