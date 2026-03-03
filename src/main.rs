@@ -4,6 +4,7 @@ mod context;
 mod editor;
 mod llm;
 mod r#loop;
+mod loop_io;
 mod planner;
 mod reviewer;
 mod runner;

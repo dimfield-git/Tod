@@ -61,30 +61,9 @@ pub struct FinalLog {
     pub message: Option<String>,
 }
 
-/// Write a terminal `final.json` for failures that occur before `RunState` exists.
-/// Best-effort: returns `Ok(())` on success, `Err` on I/O failure.
-pub fn write_plan_error_artifact(
-    log_dir: &std::path::Path,
-    run_id: &str,
-    message: &str,
-) -> Result<(), std::io::Error> {
-    std::fs::create_dir_all(log_dir)?;
-    let log = FinalLog {
-        run_id: run_id.to_string(),
-        timestamp_utc: chrono::Utc::now().to_rfc3339(),
-        outcome: "plan_error".to_string(),
-        step_index: None,
-        attempt: None,
-        message: Some(message.to_string()),
-    };
-    let json = serde_json::to_string_pretty(&log).map_err(std::io::Error::other)?;
-    std::fs::write(log_dir.join("final.json"), json)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::TempSandbox;
 
     #[test]
     fn legacy_payloads_deserialize_with_defaults() {
@@ -117,22 +96,4 @@ mod tests {
         assert_eq!(attempt.usage_cumulative.input_tokens, 0);
     }
 
-    #[test]
-    fn write_plan_error_artifact_creates_final_json() {
-        let sandbox = TempSandbox::new();
-        let log_dir = sandbox.join(".tod/logs/test_run");
-
-        let result = write_plan_error_artifact(&log_dir, "test_run", "model refused");
-        assert!(result.is_ok());
-
-        let final_path = log_dir.join("final.json");
-        assert!(final_path.exists());
-
-        let content: FinalLog = serde_json::from_str(&std::fs::read_to_string(&final_path).unwrap())
-            .expect("valid FinalLog");
-        assert_eq!(content.run_id, "test_run");
-        assert_eq!(content.outcome, "plan_error");
-        assert_eq!(content.message.as_deref(), Some("model refused"));
-        assert!(content.step_index.is_none());
-    }
 }

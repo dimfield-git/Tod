@@ -63,6 +63,58 @@ fn default_fingerprint_version() -> u8 {
     1
 }
 
+const LEGACY_V1_FINGERPRINT_WARNING: &str =
+    "legacy v1 fingerprint — same-size drift not detected until next checkpoint upgrade";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum FingerprintDecision {
+    /// Fingerprints are compatible.
+    Match,
+    /// Fingerprints are incompatible and resume should abort.
+    Mismatch {
+        expected_hash: String,
+        actual_hash: String,
+    },
+    /// Legacy-compatible match with reduced drift detection.
+    LegacyMatch {
+        warning: String,
+    },
+}
+
+/// Decide whether stored and current fingerprints are compatible for resume.
+pub fn check_fingerprint_compatibility(
+    stored: &Fingerprint,
+    current: &Fingerprint,
+) -> FingerprintDecision {
+    let stored_version = stored.fingerprint_version;
+    let current_version = current.fingerprint_version;
+    let count_mismatch = current.file_count != stored.file_count;
+    let size_mismatch = current.total_bytes != stored.total_bytes;
+    let hash_mismatch = current.hash != stored.hash;
+
+    let mismatch = match (stored_version, current_version) {
+        (1, 2) => count_mismatch || size_mismatch,
+        (1, 1) => hash_mismatch,
+        (2, 2) => count_mismatch || size_mismatch || hash_mismatch,
+        _ => hash_mismatch,
+    };
+
+    if mismatch {
+        return FingerprintDecision::Mismatch {
+            expected_hash: stored.hash.clone(),
+            actual_hash: current.hash.clone(),
+        };
+    }
+
+    if stored_version == 1 && current_version == 2 {
+        return FingerprintDecision::LegacyMatch {
+            warning: LEGACY_V1_FINGERPRINT_WARNING.to_string(),
+        };
+    }
+
+    FingerprintDecision::Match
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunProfile {
     pub mode: String,
@@ -202,15 +254,7 @@ pub struct RunState {
 
 impl RunState {
     fn new(goal: String, plan: Plan, config: &RunConfig) -> Self {
-        let base_id = chrono::Utc::now().format("%Y%m%d_%H%M%S%.6f").to_string();
-        let mut run_id = base_id.clone();
-        let mut log_dir = format!(".tod/logs/{run_id}");
-        let mut suffix = 2usize;
-        while config.project_root.join(&log_dir).exists() {
-            run_id = format!("{base_id}_{suffix}");
-            log_dir = format!(".tod/logs/{run_id}");
-            suffix += 1;
-        }
+        let identity = crate::loop_io::allocate_run_identity(&config.project_root);
         let fingerprint = compute_fingerprint(&config.project_root);
         Self {
             goal,
@@ -221,8 +265,8 @@ impl RunState {
             total_iterations: 0,
             max_iterations_per_step: config.max_iterations_per_step,
             max_total_iterations: config.max_total_iterations,
-            run_id,
-            log_dir,
+            run_id: identity.run_id,
+            log_dir: identity.log_dir,
             last_log_path: None,
             fingerprint,
             profile: Some(RunProfile::from_config(config)),
@@ -248,33 +292,12 @@ impl RunState {
     ///
     /// Best-effort — checkpoint failure never aborts a run.
     fn checkpoint(&self, config: &RunConfig) {
-        let tod_dir = config.project_root.join(".tod");
-        if fs::create_dir_all(&tod_dir).is_err() {
-            crate::warn!("could not create .tod directory");
-            return;
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                let tmp_path = tod_dir.join("state.json.tmp");
-                let final_path = tod_dir.join("state.json");
-                if let Err(e) = fs::write(&tmp_path, json) {
-                    crate::warn!("failed to write checkpoint: {e}");
-                    return;
-                }
-                if let Err(e) = fs::rename(&tmp_path, &final_path) {
-                    crate::warn!("failed to finalize checkpoint: {e}");
-                }
-            }
-            Err(e) => crate::warn!("failed to serialize checkpoint: {e}"),
-        }
+        crate::loop_io::write_checkpoint(&config.project_root, self);
     }
 
     /// Write plan.json to the run's log directory. Best-effort.
     fn write_plan_log(&self, config: &RunConfig, usage: Option<Usage>) {
         let dir = config.project_root.join(&self.log_dir);
-        if fs::create_dir_all(&dir).is_err() {
-            return;
-        }
         let log = PlanLog {
             run_id: self.run_id.clone(),
             goal: self.goal.clone(),
@@ -283,9 +306,7 @@ impl RunState {
             plan: self.plan.clone(),
             usage,
         };
-        if let Ok(json) = serde_json::to_string_pretty(&log) {
-            let _ = fs::write(dir.join("plan.json"), json);
-        }
+        crate::loop_io::write_plan_log(&dir, &log);
     }
 
     /// Write final.json to the run's log directory. Best-effort.
@@ -298,9 +319,6 @@ impl RunState {
         message: Option<String>,
     ) {
         let dir = config.project_root.join(&self.log_dir);
-        if fs::create_dir_all(&dir).is_err() {
-            return;
-        }
         let log = FinalLog {
             run_id: self.run_id.clone(),
             timestamp_utc: chrono::Utc::now().to_rfc3339(),
@@ -309,9 +327,7 @@ impl RunState {
             attempt,
             message,
         };
-        if let Ok(json) = serde_json::to_string_pretty(&log) {
-            let _ = fs::write(dir.join("final.json"), json);
-        }
+        crate::loop_io::write_final_log(&dir, &log);
     }
 
     /// Write a per-attempt log file. Best-effort. Updates `last_log_path`.
@@ -324,9 +340,6 @@ impl RunState {
         usage_this_call: Option<Usage>,
     ) {
         let dir = config.project_root.join(&self.log_dir);
-        if fs::create_dir_all(&dir).is_err() {
-            return;
-        }
 
         let (stage, ok, output, truncated) = match run_result {
             RunResult::Success => ("success".to_string(), true, String::new(), false),
@@ -361,9 +374,7 @@ impl RunState {
         );
         let path = format!("{}/{filename}", self.log_dir);
 
-        if let Ok(json) = serde_json::to_string_pretty(&log) {
-            let _ = fs::write(dir.join(&filename), json);
-        }
+        crate::loop_io::write_attempt_log(&dir, &filename, &log);
 
         self.last_log_path = Some(path);
     }
@@ -537,17 +548,13 @@ pub fn run(
     let (plan, plan_usage) = match create_plan(provider, goal, &project_context) {
         Ok(result) => result,
         Err(error) => {
-            let base_id = chrono::Utc::now().format("%Y%m%d_%H%M%S%.6f").to_string();
-            let mut run_id = base_id.clone();
-            let mut log_dir = config.project_root.join(format!(".tod/logs/{run_id}"));
-            let mut suffix = 2usize;
-            while log_dir.exists() {
-                run_id = format!("{base_id}_{suffix}");
-                log_dir = config.project_root.join(format!(".tod/logs/{run_id}"));
-                suffix += 1;
-            }
-            if let Err(write_error) =
-                crate::log_schema::write_plan_error_artifact(&log_dir, &run_id, &error.to_string())
+            let identity = crate::loop_io::allocate_run_identity(&config.project_root);
+            let log_dir = config.project_root.join(&identity.log_dir);
+            if let Err(write_error) = crate::loop_io::write_plan_error_artifact(
+                &log_dir,
+                &identity.run_id,
+                &error.to_string(),
+            )
             {
                 crate::warn!("failed to write plan_error final.json: {write_error}");
             }
@@ -831,33 +838,18 @@ pub fn resume(
     // Fingerprint check
     let current = compute_fingerprint(&config.project_root);
     if !force {
-        let stored_version = state.fingerprint.fingerprint_version;
-        let current_version = current.fingerprint_version;
-        let count_mismatch = current.file_count != state.fingerprint.file_count;
-        let size_mismatch = current.total_bytes != state.fingerprint.total_bytes;
-        let hash_mismatch = current.hash != state.fingerprint.hash;
-
-        let mismatch = match (stored_version, current_version) {
-            (1, 2) => {
-                if count_mismatch || size_mismatch {
-                    true
-                } else {
-                    eprintln!(
-                        "legacy v1 fingerprint — same-size drift not detected until next checkpoint upgrade"
-                    );
-                    false
-                }
+        match check_fingerprint_compatibility(&state.fingerprint, &current) {
+            FingerprintDecision::Match => {}
+            FingerprintDecision::LegacyMatch { warning } => eprintln!("{warning}"),
+            FingerprintDecision::Mismatch {
+                expected_hash,
+                actual_hash,
+            } => {
+                return Err(LoopError::FingerprintMismatch {
+                    expected_hash,
+                    actual_hash,
+                });
             }
-            (1, 1) => hash_mismatch,
-            (2, 2) => count_mismatch || size_mismatch || hash_mismatch,
-            _ => hash_mismatch,
-        };
-
-        if mismatch {
-            return Err(LoopError::FingerprintMismatch {
-                expected_hash: state.fingerprint.hash.clone(),
-                actual_hash: current.hash,
-            });
         }
     }
     state.fingerprint = current;
@@ -919,6 +911,41 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| LlmError::RequestFailed("no fake response queued".to_string()))?;
             Ok(LlmResponse { text, usage: None })
+        }
+    }
+
+    fn assert_run_id_matches_policy(run_id: &str) {
+        let parts: Vec<&str> = run_id.split('_').collect();
+        assert!(
+            parts.len() == 2 || parts.len() == 3,
+            "run_id must be <date>_<time.frac>[_<suffix>]"
+        );
+        assert_eq!(parts[0].len(), 8);
+        assert!(parts[0].chars().all(|c| c.is_ascii_digit()));
+
+        let time_frac = parts[1];
+        assert_eq!(time_frac.len(), 13);
+        let mut tf_parts = time_frac.split('.');
+        let hhmmss = tf_parts.next().unwrap();
+        let micros = tf_parts.next().unwrap();
+        assert!(tf_parts.next().is_none());
+        assert_eq!(hhmmss.len(), 6);
+        assert_eq!(micros.len(), 6);
+        assert!(hhmmss.chars().all(|c| c.is_ascii_digit()));
+        assert!(micros.chars().all(|c| c.is_ascii_digit()));
+
+        if parts.len() == 3 {
+            assert!(!parts[2].is_empty());
+            assert!(parts[2].chars().all(|c| c.is_ascii_digit()));
+        }
+    }
+
+    fn fingerprint(version: u8, file_count: usize, total_bytes: u64, hash: &str) -> Fingerprint {
+        Fingerprint {
+            fingerprint_version: version,
+            file_count,
+            total_bytes,
+            hash: hash.to_string(),
         }
     }
 
@@ -1039,6 +1066,42 @@ mod tests {
     }
 
     #[test]
+    fn run_writes_expected_artifact_contract_files() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = QueueProvider::from(vec![
+            r#"{"steps":[{"description":"update main","files":["src/main.rs"]}]}"#,
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"ok\"); }"}]}"#,
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let report = run(&provider, "goal", &config).unwrap();
+        assert_eq!(report.steps_completed, 1);
+        assert_eq!(report.total_iterations, 1);
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+        let run_dir = &entries[0];
+
+        assert!(run_dir.join("plan.json").exists());
+        assert!(run_dir.join("final.json").exists());
+        assert!(run_dir.join("step_0_attempt_1.json").exists());
+    }
+
+    #[test]
     fn run_writes_final_log_on_cap_reached() {
         let sandbox = TempSandbox::with_main_rs();
         let provider = QueueProvider::from(vec![
@@ -1105,6 +1168,38 @@ mod tests {
         assert_eq!(parsed.run_id, run_dir_name);
         assert_eq!(parsed.outcome, "plan_error");
         assert!(parsed.message.is_some());
+    }
+
+    #[test]
+    fn plan_error_run_id_uses_same_allocation_policy() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let normal_state = RunState::new("goal".into(), plan, &config);
+        assert_run_id_matches_policy(&normal_state.run_id);
+
+        let provider = QueueProvider::from(vec!["not json"]);
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Plan(_)));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+        let run_id = entries[0].file_name().unwrap().to_string_lossy().to_string();
+        assert_run_id_matches_policy(&run_id);
     }
 
     #[test]
@@ -1765,6 +1860,63 @@ mod tests {
         assert_ne!(before.hash, after.hash);
     }
 
+    #[test]
+    fn fingerprint_compatibility_matrix() {
+        let v2_a = fingerprint(2, 3, 120, "hash-a");
+        let v2_b = fingerprint(2, 3, 120, "hash-b");
+        assert_eq!(
+            check_fingerprint_compatibility(&v2_a, &v2_a),
+            FingerprintDecision::Match
+        );
+        assert_eq!(
+            check_fingerprint_compatibility(&v2_a, &v2_b),
+            FingerprintDecision::Mismatch {
+                expected_hash: "hash-a".to_string(),
+                actual_hash: "hash-b".to_string(),
+            }
+        );
+
+        let v1_same = fingerprint(1, 3, 120, "legacy-hash");
+        let v1_other = fingerprint(1, 3, 120, "legacy-other");
+        assert_eq!(
+            check_fingerprint_compatibility(&v1_same, &v1_same),
+            FingerprintDecision::Match
+        );
+        assert_eq!(
+            check_fingerprint_compatibility(&v1_same, &v1_other),
+            FingerprintDecision::Mismatch {
+                expected_hash: "legacy-hash".to_string(),
+                actual_hash: "legacy-other".to_string(),
+            }
+        );
+
+        let v2_same_size = fingerprint(2, 3, 120, "v2-same-size-hash");
+        assert_eq!(
+            check_fingerprint_compatibility(&v1_same, &v2_same_size),
+            FingerprintDecision::LegacyMatch {
+                warning: LEGACY_V1_FINGERPRINT_WARNING.to_string(),
+            }
+        );
+
+        let v2_diff_size = fingerprint(2, 3, 121, "v2-diff-size-hash");
+        assert_eq!(
+            check_fingerprint_compatibility(&v1_same, &v2_diff_size),
+            FingerprintDecision::Mismatch {
+                expected_hash: "legacy-hash".to_string(),
+                actual_hash: "v2-diff-size-hash".to_string(),
+            }
+        );
+
+        let unknown = fingerprint(9, 3, 120, "unknown");
+        assert_eq!(
+            check_fingerprint_compatibility(&unknown, &v2_a),
+            FingerprintDecision::Mismatch {
+                expected_hash: "unknown".to_string(),
+                actual_hash: "hash-a".to_string(),
+            }
+        );
+    }
+
     // -- RunState round-trip ----------------------------------------------
 
     #[test]
@@ -2114,6 +2266,36 @@ mod tests {
     }
 
     #[test]
+    fn legacy_checkpoint_without_profile_deserializes_with_default() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let state_path = sandbox.join(".tod/state.json");
+        let state_json = fs::read_to_string(&state_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&state_json).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("profile")
+            .expect("new checkpoints include profile");
+        let legacy_json = serde_json::to_string_pretty(&value).unwrap();
+
+        let loaded: RunState = serde_json::from_str(&legacy_json).unwrap();
+        assert!(loaded.profile.is_none());
+    }
+
+    #[test]
     fn resume_legacy_fingerprint_version_compatible() {
         let sandbox = TempSandbox::with_main_rs();
         let config = RunConfig {
@@ -2153,5 +2335,34 @@ mod tests {
         ]);
         let report = resume(&provider, &config, false).unwrap();
         assert_eq!(report.steps_completed, 1);
+    }
+
+    #[test]
+    fn legacy_fingerprint_without_version_defaults_to_v1() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let state_path = sandbox.join(".tod/state.json");
+        let state_json = fs::read_to_string(&state_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&state_json).unwrap();
+        value["fingerprint"]
+            .as_object_mut()
+            .expect("fingerprint must be object")
+            .remove("fingerprint_version");
+        let legacy_json = serde_json::to_string_pretty(&value).unwrap();
+
+        let loaded: RunState = serde_json::from_str(&legacy_json).unwrap();
+        assert_eq!(loaded.fingerprint.fingerprint_version, 1);
     }
 }

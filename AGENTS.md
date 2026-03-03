@@ -14,7 +14,7 @@
 ## Definition of Done
 
 A change is complete only when:
-- `cargo test` passes (baseline: **185 passed, 1 ignored**)
+- `cargo test` passes (baseline: **193 passed, 1 ignored**)
 - `cargo clippy -- -D warnings` is clean
 - behavior and docs are aligned for any changed runtime surface
 
@@ -33,8 +33,7 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1–14 complete
-- Phase 15 in progress
+- Phases 1–15 complete
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -140,11 +139,11 @@ Request counting semantics:
 | 12 | Failure observability and final outcome fidelity | Done |
 | 13 | Resume determinism + fingerprint v2 + run-id hardening | Done |
 | 14 | Observability/schema cohesion and metrics fidelity | Done |
-| 15 | Loop surface reduction + compatibility hardening | In progress |
+| 15 | Loop surface reduction + compatibility hardening | Done |
 
-## Phase 15 Priority (Handoff)
+## Phase 15 Outcomes
 
-Primary objective for the current phase:
+Completed outcomes:
 - Establish clean three-module boundary: `log_schema.rs` (types), `loop_io.rs` (persistence + identity), `loop.rs` (orchestration).
 - Eliminate duplicated run identity allocation logic.
 - Isolate fingerprint compatibility decisions into pure, table-testable logic.

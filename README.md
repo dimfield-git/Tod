@@ -1,73 +1,127 @@
 # Tod
-<img width="1536" height="1024" alt="ChatGPT Image Feb 22, 2026, 11_27_52 PM" src="https://github.com/user-attachments/assets/ec2dacad-a425-47de-a9c5-1f8978378d28" />
 
-Tod is a minimal Rust coding agent that plans work with an LLM, generates JSON edit batches, validates and applies edits transactionally, runs cargo pipelines, and iterates until success or a configured cap.
+Tod is a minimal Rust coding agent that plans work with an LLM, generates JSON edit batches, validates and applies edits transactionally, runs cargo quality pipelines, and iterates until success or configured caps.
 
-- [`docs/tod-architecture.html`](https://dimfield-git.github.io/Tod/tod-architecture.html) — Interactive module architecture diagram
+Core design principle: LLM generates intent; deterministic Rust code constrains execution.
+
+## Current Status
+
+- Phases 1-15 complete
+- Baseline validation: `cargo test` (`193 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
+
+## Requirements
+
+- Rust toolchain (cargo + rustc)
+- Linux-first workflow (terminal-only)
+- `ANTHROPIC_API_KEY` for `run`/`resume`
 
 ## Quick Start
 
 ```bash
 cargo build
 export ANTHROPIC_API_KEY="sk-..."
+
+# scaffold a target project
 cargo run -- init myproject
+
+# run Tod against that project
 cargo run -- run --project ./myproject "Add a CLI flag --name and print hello, <name>"
+
+# inspect latest run
+cargo run -- status --project ./myproject
+cargo run -- stats --project ./myproject --last 5
 ```
 
 ## Commands
 
-- `init <name>`: scaffold a new Rust project via `cargo init` and add `.tod/` to `.gitignore`.
-- `run [FLAGS] --project <path> "<goal>"`: run a new agent session for a goal.
-- `resume --project <path> [--force]`: continue from `.tod/state.json`.
-- `status [--project <path>]`: show summary for the latest run.
-- `stats [--project <path>] [--last N]`: summarize recent run history from `.tod/logs/`.
+- `init <name>`
+- `run [--project <path>] [--strict] [--max-iters <N>] [--dry-run] [--max-tokens <N>] <goal>`
+- `resume [--project <path>] [--force]`
+- `status [--project <path>]`
+- `stats [--project <path>] [--last <N>]`
 
-Status/stats outcome notes:
-- When present, `.tod/logs/<run_id>/final.json` is the source of truth for terminal run outcome and terminal message.
-- Legacy runs without `final.json` are still supported; outcome falls back to attempt-log inference.
-- Attempt logs with `review_decision: "error"` represent pre-review infrastructure failures and are not counted as reviewer aborts.
+### Run flags
 
-Resume determinism notes:
-- Checkpoints persist a run execution profile (`mode`, `dry_run`, `max_runner_output_bytes`) and `resume` reuses it when present.
-- New checkpoints use fingerprint v2 (content-aware hash). Legacy v1 checkpoints remain compatible on resume; during v1→v2 migration, same-size drift is not detected until the next checkpoint refresh.
-- Run IDs include fractional seconds and add numeric suffixes (`_2`, `_3`, ...) on log-dir collisions.
+- `--project <path>`: target project root (default `.`)
+- `--strict`: pipeline is `cargo fmt --all --check`, `cargo clippy -- -D warnings`, then `cargo test`
+- default mode pipeline: `cargo build`, then `cargo test`
+- `--max-iters <N>`: max iterations per step (`N >= 1`)
+- `--dry-run`: generate/validate/log edits without writing files or running cargo
+- `--max-tokens <N>`: global token cap (`input + output`, `0` disables cap)
 
-## Configuration
+## Runtime Artifacts
 
-- `ANTHROPIC_API_KEY`: required API key for Anthropic.
-- `TOD_MODEL`: optional model override (default `claude-sonnet-4-5-20250929`).
-- `TOD_RESPONSE_MAX_TOKENS`: optional provider response cap (default `4096`).
+Tod writes runtime state under the target project's `.tod/` directory.
 
-## Run Flags
+```text
+<project_root>/.tod/
+  state.json
+  logs/<run_id>/
+    plan.json
+    final.json
+    step_<n>_attempt_<m>.json
+```
 
-- `--strict`: run `cargo fmt --all --check`, `cargo clippy -- -D warnings`, then `cargo test`.
-- `--max-iters <N>`: max iterations per plan step.
-- `--max-tokens <N>`: token budget cap (`0` disables cap).
-- `--dry-run`: generate and validate edits without filesystem mutation or cargo execution.
-- `--project <path>`: target project root.
+Artifact semantics:
 
-## Project Structure
+- `plan.json`: plan snapshot after planner success
+- `step_<n>_attempt_<m>.json`: per-attempt edit/apply/run/review log
+- `final.json`: terminal outcome source of truth when present
+- `state.json`: checkpoint for `resume`
+
+`stats` compatibility behavior:
+
+- Prefers `final.json` for outcome/message
+- Falls back to attempt-log inference for legacy runs without `final.json`
+- Supports plan-error runs that only have `final.json` (no `plan.json`)
+
+## Resume and Compatibility
+
+- Checkpoints persist run execution profile (`mode`, `dry_run`, `max_runner_output_bytes`)
+- `resume` reuses checkpoint profile when present
+- Fingerprints are versioned:
+  - v1 legacy: `(path,size)` hash
+  - v2 current: content-aware hash
+- Legacy checkpoints remain resumable; v1->v2 same-size drift caveat is preserved
+- Run IDs are timestamp-based and collision-safe with suffixes (`_2`, `_3`, ...)
+
+## Environment Variables
+
+- `ANTHROPIC_API_KEY` (required for LLM-backed commands)
+- `TOD_MODEL` (optional, default `claude-sonnet-4-5-20250929`)
+- `TOD_RESPONSE_MAX_TOKENS` (optional, default `4096`)
+
+## Architecture
 
 ```text
 src/
-  main.rs       entry point, CLI dispatch, provider init
-  loop.rs       orchestration, state/checkpoint/logging, resume
-  context.rs    planner/step/retry context building with byte budgets
-  planner.rs    plan prompt and semantic validation
-  editor.rs     edit prompt and edit generation
-  runner.rs     transactional edit apply + cargo pipeline execution
-  reviewer.rs   proceed/retry/abort decision logic
-  schema.rs     edit schema, extraction, path and batch validation
-  llm.rs        provider trait + Anthropic implementation
-  cli.rs        clap CLI definitions and argument conversion
-  config.rs     run configuration types
-  util.rs       shared helpers (`safe_preview`, `warn!`)
-  stats.rs      read-only run history analysis
-  test_util.rs  shared test sandbox helpers
+  main.rs         entry point + command dispatch (run/resume/status/stats/init)
+  cli.rs          clap command model + run config conversion
+  config.rs       run configuration types
+  context.rs      planner/step/retry context building + budget enforcement
+  planner.rs      plan prompt + plan validation
+  editor.rs       edit prompt + edit batch generation
+  schema.rs       edit schema + JSON extraction + path/range/batch validation
+  runner.rs       transactional edit apply + cargo stage execution
+  reviewer.rs     proceed/retry/abort policy
+  llm.rs          LLM provider trait + Anthropic implementation + retries
+  log_schema.rs   log structs + serde defaults (types only)
+  loop_io.rs      persistence primitives + run identity allocation
+  loop.rs         orchestration state machine + checkpointing + resume
+  stats.rs        read-only run/log summarization and formatting
+  util.rs         shared warning + UTF-8-safe preview helper
+  test_util.rs    shared temp sandbox helper (tests only)
 ```
 
-## Status
+## Development
 
-Prototype: Phases 1-13 complete. Baseline validation: `cargo test` (178 passed, 1 ignored) and `cargo clippy -- -D warnings` clean.
+Run local quality gates:
 
-<img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/1186b466-ce17-4bf3-af6f-157662fae955" />
+```bash
+cargo test
+cargo clippy -- -D warnings
+```
+
+Interactive architecture reference:
+
+- `docs/tod-architecture.html`
