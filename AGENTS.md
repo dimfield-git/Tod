@@ -14,7 +14,7 @@
 ## Definition of Done
 
 A change is complete only when:
-- `cargo test` passes (baseline: **178 passed, 1 ignored**)
+- `cargo test` passes (baseline: **185 passed, 1 ignored**)
 - `cargo clippy -- -D warnings` is clean
 - behavior and docs are aligned for any changed runtime surface
 
@@ -33,8 +33,8 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1–13 complete
-- Phase 14 in progress
+- Phases 1–14 complete
+- Phase 15 in progress
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -53,8 +53,9 @@ src/
   runner.rs       transactional edit apply + cargo stage execution
   reviewer.rs     proceed/retry/abort policy
   llm.rs          LLM provider trait + Anthropic implementation + retries
-  log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog)
-  loop.rs         orchestration state machine + checkpointing + resume + logs
+  log_schema.rs   shared log structs (RunnerLog, AttemptLog, PlanLog, FinalLog) — pure data + serde
+  loop_io.rs      persistence primitives, run identity allocation, best-effort JSON writers
+  loop.rs         orchestration state machine + checkpointing + resume
   stats.rs        read-only run/log summarization and formatting
   util.rs         shared warning + UTF-8-safe preview helper
   test_util.rs    shared temp sandbox helper (tests only)
@@ -94,13 +95,19 @@ Resume and checkpoint invariants:
   - v2 current: content-aware hash
 - Resume must keep legacy compatibility for old checkpoints.
 - Resume should reuse originating execution profile when checkpoint profile exists.
+- Fingerprint compatibility decisions are isolated in pure, table-testable logic.
 
 Observability invariants:
 - Every post-plan terminal path should write `final.json`.
 - Planner-stage failures must also write `final.json` with `outcome: "plan_error"`.
+- Planner-stage `plan_error` runs may not have `plan.json`; stats must still summarize them.
 - Stats prefers `final.json` as source of truth and falls back for legacy logs.
 - Legacy artifacts must remain deserializable via defaults where practical.
-- Log schema types live in `log_schema.rs`, not in orchestration modules.
+
+Module boundary invariants:
+- `log_schema.rs` owns log struct types and serde defaults only. No IO, no formatting.
+- `loop_io.rs` owns persistence primitives and run identity allocation. All writes are best-effort (warn on failure, never propagate). Checkpoint writes use atomic tmp+rename to prevent corruption.
+- `loop.rs` owns orchestration flow. Delegates persistence and identity to `loop_io.rs`.
 
 Request counting semantics:
 - A request is one logical LLM intent: one plan call = 1 request, one edit call = 1 request.
@@ -132,19 +139,21 @@ Request counting semantics:
 | 11 | Reliability accounting and token-cap resume guard | Done |
 | 12 | Failure observability and final outcome fidelity | Done |
 | 13 | Resume determinism + fingerprint v2 + run-id hardening | Done |
-| 14 | Observability/schema cohesion and metrics fidelity | In progress |
+| 14 | Observability/schema cohesion and metrics fidelity | Done |
+| 15 | Loop surface reduction + compatibility hardening | In progress |
 
-## Phase 14 Priority (Handoff)
+## Phase 15 Priority (Handoff)
 
 Primary objective for the current phase:
-- Decouple log schema from orchestration internals.
-- Close planner-stage observability gap (pre-RunState failures emit `final.json`).
-- Expand multi-run stats with explicit terminal outcome buckets.
-- Harden request counting to logical call semantics, independent of usage-field presence.
+- Establish clean three-module boundary: `log_schema.rs` (types), `loop_io.rs` (persistence + identity), `loop.rs` (orchestration).
+- Eliminate duplicated run identity allocation logic.
+- Isolate fingerprint compatibility decisions into pure, table-testable logic.
+- Add regression coverage protecting legacy compatibility and artifact contracts.
 
-Design decisions locked for Phase 14:
-- Log schema structs live in `log_schema.rs`. Helper functions for pre-run artifact writing also land there.
-- Request counting is logical (1 per intent), not transport-level. Retries are invisible to the count.
-- Task 5 (light loop extraction) is conditional: if Tasks 1–2 sufficiently reduce loop.rs pressure, skip it.
+Design decisions locked for Phase 15:
+- `write_plan_error_artifact` moves from `log_schema.rs` to `loop_io.rs`, leaving `log_schema.rs` as pure data + serde.
+- Run-id allocation returns a struct (`RunIdentity`), not bare strings. All call sites go through one helper.
+- All persistence writes are best-effort (warn, don't propagate). Checkpoint writes must preserve the atomic tmp+rename pattern.
+- No new user-facing capabilities this phase.
 
-Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this reliability work is complete.
+Do not expand into major new feature surfaces (patch mode, git isolation, local providers) until this maintainability and compatibility work is complete.
