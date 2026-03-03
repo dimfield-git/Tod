@@ -605,10 +605,12 @@ mod tests {
             log_dir: log_dir.to_string(),
             last_log_path: None,
             fingerprint: Fingerprint {
+                fingerprint_version: 2,
                 file_count: 0,
                 total_bytes: 0,
                 hash: "hash".to_string(),
             },
+            profile: None,
             usage: Usage::default(),
             llm_requests: 0,
             max_tokens: 0,
@@ -873,6 +875,47 @@ mod tests {
         assert_eq!(summary.runs_total, 2);
         assert_eq!(summary.runs_succeeded, 1);
         assert_eq!(summary.runs_aborted, 1);
+    }
+
+    #[test]
+    fn run_id_sorting_remains_stable_for_stats() {
+        let sandbox = TempSandbox::new();
+        let logs_dir = sandbox.join(".tod/logs");
+
+        let old = "20260303_120000.100000";
+        let same_tick_newer = "20260303_120000.100000_2";
+        let newest = "20260303_120000.100001";
+
+        let old_dir = logs_dir.join(old);
+        let same_tick_newer_dir = logs_dir.join(same_tick_newer);
+        let newest_dir = logs_dir.join(newest);
+
+        write_plan(&old_dir, old, "old", 1);
+        write_attempt(&old_dir, old, 0, 1, "test", true, "proceed");
+
+        write_plan(
+            &same_tick_newer_dir,
+            same_tick_newer,
+            "same_tick_newer",
+            1,
+        );
+        write_attempt(
+            &same_tick_newer_dir,
+            same_tick_newer,
+            0,
+            1,
+            "test",
+            false,
+            "abort",
+        );
+
+        write_plan(&newest_dir, newest, "newest", 1);
+        write_attempt(&newest_dir, newest, 0, 1, "test", false, "abort");
+
+        let summary = summarize_runs(&sandbox.join(".tod"), 2).unwrap();
+        assert_eq!(summary.runs_total, 2);
+        assert_eq!(summary.runs_succeeded, 0);
+        assert_eq!(summary.runs_aborted, 2);
     }
 
     #[test]

@@ -27,6 +27,11 @@ Status/stats outcome notes:
 - Legacy runs without `final.json` are still supported; outcome falls back to attempt-log inference.
 - Attempt logs with `review_decision: "error"` represent pre-review infrastructure failures and are not counted as reviewer aborts.
 
+Resume determinism notes:
+- Checkpoints persist a run execution profile (`mode`, `dry_run`, `max_runner_output_bytes`) and `resume` reuses it when present.
+- New checkpoints use fingerprint v2 (content-aware hash). Legacy v1 checkpoints remain compatible on resume; during v1→v2 migration, same-size drift is not detected until the next checkpoint refresh.
+- Run IDs include fractional seconds and add numeric suffixes (`_2`, `_3`, ...) on log-dir collisions.
+
 ## Configuration
 
 - `ANTHROPIC_API_KEY`: required API key for Anthropic.
@@ -63,6 +68,6 @@ src/
 
 ## Status
 
-Prototype: Phases 1-12 complete.
+Prototype: Phases 1-13 complete. Baseline validation: `cargo test` (178 passed, 1 ignored) and `cargo clippy -- -D warnings` clean.
 
 <img width="1024" height="1024" alt="Gemini_Generated_Image_5yepy25yepy25yep" src="https://github.com/user-attachments/assets/1186b466-ce17-4bf3-af6f-157662fae955" />

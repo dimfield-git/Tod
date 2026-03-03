@@ -21,9 +21,9 @@
 
 Tod is a minimal Rust coding agent that operates from the terminal. It plans work via LLM, generates JSON edit batches, validates and applies them transactionally, runs cargo pipelines, and iterates until success or cap.
 
-**"Done" means:** `cargo test` passes (baseline: 169 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
+**"Done" means:** `cargo test` passes (baseline: 178 passing, 1 ignored), `cargo clippy -- -D warnings` clean, binary runs.
 
-Linux-only. No GUI dependencies. Phases 1–12 complete, Phase 13 next.
+Linux-only. No GUI dependencies. Phases 1–13 complete.
 
 Core design principle: **"LLM generates, everything else constrains."**
 
@@ -85,6 +85,8 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Every run exit after planning produces `final.json` with an explicit terminal outcome. Stats uses `final.json` as source of truth when present and falls back to heuristic inference for legacy logs.
 - Checkpoint fingerprint must reflect workspace state at the moment of checkpoint write, not an earlier snapshot. `checkpoint()` is `&self`; callers refresh fingerprint before persisting.
 - Resume must use the originating run's execution profile (mode, dry-run, runner output cap) when a stored profile exists. Legacy checkpoints without a profile fall back to caller defaults.
+- Fingerprints are versioned. New checkpoints write v2 content-aware hashes; legacy v1 checkpoints remain resumable via compatibility checks (file count + total bytes) until rewritten.
+- Run IDs include fractional seconds and defend against directory collisions by suffixing (`_2`, `_3`, ...), while preserving lexical recency sorting for stats.
 
 ## Phase History
 
@@ -102,4 +104,4 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 | 10 | External usability — naming consistency, --project flag, shared utilities, structured errors, LICENSE | ✅ Done |
 | 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
 | 12 | Failure observability — terminal outcome log, pre-runner error logging, stats outcome fidelity | ✅ Done |
-| 13 | Resume determinism — checkpoint fingerprint freshness, execution profile persistence, content-aware drift detection, run ID hardening | 🔜 Next |
+| 13 | Resume determinism — checkpoint fingerprint freshness, execution profile persistence, content-aware drift detection, run ID hardening | ✅ Done |

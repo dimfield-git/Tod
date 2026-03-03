@@ -26,9 +26,10 @@ fn main() {
 
     match cli.command {
         run_cmd @ Command::Run { .. } => {
-            let (goal, config) = run_cmd
-                .into_run_config()
-                .expect("Run command must produce run config");
+            let Some((goal, config)) = run_cmd.into_run_config() else {
+                eprintln!("failed to build run configuration");
+                std::process::exit(1);
+            };
 
             let provider = match AnthropicProvider::from_env() {
                 Ok(p) => p,

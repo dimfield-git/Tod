@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::RunConfig;
+use crate::config::{RunConfig, RunMode};
 use crate::context::{self, ContextError, MAX_TREE_DEPTH};
 use crate::editor::{create_edits, EditError};
 use crate::llm::{LlmProvider, Usage};
@@ -45,23 +45,63 @@ impl StepState {
 // Workspace fingerprint
 // ---------------------------------------------------------------------------
 
-/// Cheap workspace drift detection.
+/// Workspace drift detection fingerprint.
 ///
-/// Hashes sorted `(relative_path, file_size)` pairs for all tracked files,
-/// excluding `target/`, `.git/`, and `.tod/`. No mtime (filesystem-dependent),
-/// no content hashing (too slow for v1).
+/// v1 hashed sorted `(relative_path, file_size)` tuples.
+/// v2 hashes file paths plus file contents for same-size drift detection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fingerprint {
+    #[serde(default = "default_fingerprint_version")]
+    pub fingerprint_version: u8,
     pub file_count: usize,
     pub total_bytes: u64,
     pub hash: String,
 }
 
-fn compute_fingerprint(project_root: &Path) -> Fingerprint {
-    let mut entries: Vec<(String, u64)> = Vec::new();
+fn default_fingerprint_version() -> u8 {
+    1
+}
 
-    // Reuse the same walk logic as collect_paths, but gather sizes.
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>, depth: usize) {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunProfile {
+    pub mode: String,
+    pub dry_run: bool,
+    pub max_runner_output_bytes: usize,
+}
+
+impl RunProfile {
+    fn from_config(config: &RunConfig) -> Self {
+        Self {
+            mode: match config.mode {
+                RunMode::Default => "default".to_string(),
+                RunMode::Strict => "strict".to_string(),
+            },
+            dry_run: config.dry_run,
+            max_runner_output_bytes: config.max_runner_output_bytes,
+        }
+    }
+
+    fn to_run_mode(&self) -> RunMode {
+        match self.mode.as_str() {
+            "strict" => RunMode::Strict,
+            other => {
+                if other != "default" {
+                    eprintln!(
+                        "warning: unknown run mode '{}' in checkpoint, falling back to default",
+                        other
+                    );
+                }
+                RunMode::Default
+            }
+        }
+    }
+}
+
+fn compute_fingerprint(project_root: &Path) -> Fingerprint {
+    let mut entries: Vec<(String, PathBuf, u64)> = Vec::new();
+
+    // Reuse the same walk logic as collect_paths.
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf, u64)>, depth: usize) {
         if depth > MAX_TREE_DEPTH {
             return;
         }
@@ -82,7 +122,7 @@ fn compute_fingerprint(project_root: &Path) -> Fingerprint {
                     continue;
                 };
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                out.push((rel.to_string_lossy().to_string(), size));
+                out.push((rel.to_string_lossy().to_string(), path, size));
             }
         }
     }
@@ -91,15 +131,21 @@ fn compute_fingerprint(project_root: &Path) -> Fingerprint {
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let file_count = entries.len();
-    let total_bytes: u64 = entries.iter().map(|(_, s)| s).sum();
+    let total_bytes: u64 = entries.iter().map(|(_, _, s)| s).sum();
 
     let mut hasher = Sha256::new();
-    for (path, size) in &entries {
-        hasher.update(format!("{path}:{size}\n").as_bytes());
+    for (path, abs_path, _) in &entries {
+        hasher.update(path.as_bytes());
+        hasher.update([0]);
+        if let Ok(content) = fs::read(abs_path) {
+            hasher.update(content);
+        }
+        hasher.update([0xff]);
     }
     let hash = format!("{:x}", hasher.finalize());
 
     Fingerprint {
+        fingerprint_version: 2,
         file_count,
         total_bytes,
         hash,
@@ -192,7 +238,7 @@ pub struct RunState {
     pub max_iterations_per_step: usize,
     /// Cap: max total iterations across all steps (copied from config).
     pub max_total_iterations: usize,
-    /// Unique identifier for this run (YYYYMMDD_HHMMSS UTC).
+    /// Unique identifier for this run (UTC with fractional seconds).
     pub run_id: String,
     /// Relative path to the log directory for this run.
     pub log_dir: String,
@@ -200,6 +246,9 @@ pub struct RunState {
     pub last_log_path: Option<String>,
     /// Workspace fingerprint at last checkpoint.
     pub fingerprint: Fingerprint,
+    /// Frozen execution profile used when resuming this run.
+    #[serde(default)]
+    pub profile: Option<RunProfile>,
     /// Accumulated token usage across all LLM calls in this run.
     #[serde(default)]
     pub usage: Usage,
@@ -213,8 +262,15 @@ pub struct RunState {
 
 impl RunState {
     fn new(goal: String, plan: Plan, config: &RunConfig) -> Self {
-        let now = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let log_dir = format!(".tod/logs/{now}");
+        let base_id = chrono::Utc::now().format("%Y%m%d_%H%M%S%.6f").to_string();
+        let mut run_id = base_id.clone();
+        let mut log_dir = format!(".tod/logs/{run_id}");
+        let mut suffix = 2usize;
+        while config.project_root.join(&log_dir).exists() {
+            run_id = format!("{base_id}_{suffix}");
+            log_dir = format!(".tod/logs/{run_id}");
+            suffix += 1;
+        }
         let fingerprint = compute_fingerprint(&config.project_root);
         Self {
             goal,
@@ -225,10 +281,11 @@ impl RunState {
             total_iterations: 0,
             max_iterations_per_step: config.max_iterations_per_step,
             max_total_iterations: config.max_total_iterations,
-            run_id: now,
+            run_id,
             log_dir,
             last_log_path: None,
             fingerprint,
+            profile: Some(RunProfile::from_config(config)),
             usage: Usage::default(),
             llm_requests: 0,
             max_tokens: config.max_tokens,
@@ -241,6 +298,10 @@ impl RunState {
             steps_completed: self.steps_completed,
             total_iterations: self.total_iterations,
         }
+    }
+
+    fn refresh_fingerprint(&mut self, project_root: &Path) {
+        self.fingerprint = compute_fingerprint(project_root);
     }
 
     /// Write state to `.tod/state.json`.
@@ -576,6 +637,7 @@ fn run_from_state(
         while state.step_state.attempt < state.max_iterations_per_step {
             // --- Global cap guard ---
             if state.total_iterations >= state.max_total_iterations {
+                state.refresh_fingerprint(&config.project_root);
                 state.checkpoint(config);
                 let err = LoopError::TotalIterationCap {
                     max_total_iterations: state.max_total_iterations,
@@ -624,6 +686,7 @@ fn run_from_state(
                             "error",
                             None,
                         );
+                        state.refresh_fingerprint(&config.project_root);
                         state.checkpoint(config);
                         state.write_final_log(
                             config,
@@ -640,6 +703,7 @@ fn run_from_state(
                 state.llm_requests += 1;
             }
             if state.max_tokens > 0 && state.usage.total() > state.max_tokens {
+                state.refresh_fingerprint(&config.project_root);
                 state.checkpoint(config);
                 let err = LoopError::TokenCapExceeded {
                     used: state.usage.total(),
@@ -672,6 +736,7 @@ fn run_from_state(
                         truncated: false,
                     };
                     state.write_attempt_log(config, &batch, &run_result, "error", None);
+                    state.refresh_fingerprint(&config.project_root);
                     state.checkpoint(config);
                     state.write_final_log(
                         config,
@@ -700,6 +765,7 @@ fn run_from_state(
                         "proceed",
                         call_usage.clone(),
                     );
+                    state.refresh_fingerprint(&config.project_root);
                     state.checkpoint(config);
                     break;
                 }
@@ -712,6 +778,7 @@ fn run_from_state(
                         call_usage.clone(),
                     );
                     state.step_state.retry_context = Some(error_context);
+                    state.refresh_fingerprint(&config.project_root);
                     state.checkpoint(config);
                 }
                 ReviewDecision::Abort { reason } => {
@@ -722,6 +789,7 @@ fn run_from_state(
                         "abort",
                         call_usage.clone(),
                     );
+                    state.refresh_fingerprint(&config.project_root);
                     state.checkpoint(config);
                     let err = LoopError::Aborted {
                         step_index: state.step_index,
@@ -740,6 +808,7 @@ fn run_from_state(
         }
 
         if !step_succeeded {
+            state.refresh_fingerprint(&config.project_root);
             state.checkpoint(config);
             let err = LoopError::Aborted {
                 step_index: state.step_index,
@@ -761,6 +830,7 @@ fn run_from_state(
         state.step_state = StepState::new();
 
         // Checkpoint: step completed, about to start next (or finish).
+        state.refresh_fingerprint(&config.project_root);
         state.checkpoint(config);
     }
 
@@ -785,13 +855,51 @@ pub fn resume(
         message: format!("failed to parse state.json: {e}"),
     })?;
 
+    let effective_config = if let Some(ref profile) = state.profile {
+        RunConfig {
+            project_root: config.project_root.clone(),
+            mode: profile.to_run_mode(),
+            dry_run: profile.dry_run,
+            max_runner_output_bytes: profile.max_runner_output_bytes,
+            max_iterations_per_step: state.max_iterations_per_step,
+            max_total_iterations: state.max_total_iterations,
+            max_tokens: state.max_tokens,
+        }
+    } else {
+        config.clone()
+    };
+
     // Fingerprint check
     let current = compute_fingerprint(&config.project_root);
-    if current.hash != state.fingerprint.hash && !force {
-        return Err(LoopError::FingerprintMismatch {
-            expected_hash: state.fingerprint.hash.clone(),
-            actual_hash: current.hash,
-        });
+    if !force {
+        let stored_version = state.fingerprint.fingerprint_version;
+        let current_version = current.fingerprint_version;
+        let count_mismatch = current.file_count != state.fingerprint.file_count;
+        let size_mismatch = current.total_bytes != state.fingerprint.total_bytes;
+        let hash_mismatch = current.hash != state.fingerprint.hash;
+
+        let mismatch = match (stored_version, current_version) {
+            (1, 2) => {
+                if count_mismatch || size_mismatch {
+                    true
+                } else {
+                    eprintln!(
+                        "legacy v1 fingerprint — same-size drift not detected until next checkpoint upgrade"
+                    );
+                    false
+                }
+            }
+            (1, 1) => hash_mismatch,
+            (2, 2) => count_mismatch || size_mismatch || hash_mismatch,
+            _ => hash_mismatch,
+        };
+
+        if mismatch {
+            return Err(LoopError::FingerprintMismatch {
+                expected_hash: state.fingerprint.hash.clone(),
+                actual_hash: current.hash,
+            });
+        }
     }
     state.fingerprint = current;
 
@@ -801,7 +909,7 @@ pub fn resume(
             cap: state.max_tokens,
         };
         state.write_final_log(
-            config,
+            &effective_config,
             "token_cap",
             Some(state.step_index),
             (state.step_state.attempt > 0).then_some(state.step_state.attempt),
@@ -811,7 +919,7 @@ pub fn resume(
     }
 
     // Continue the step loop from where we left off
-    run_from_state(provider, config, &mut state)
+    run_from_state(provider, &effective_config, &mut state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1256,6 +1364,28 @@ mod tests {
     }
 
     #[test]
+    fn run_state_new_generates_unique_run_ids() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "test".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+
+        let first = RunState::new("goal".into(), plan.clone(), &config);
+        fs::create_dir_all(sandbox.join(&first.log_dir)).unwrap();
+        let second = RunState::new("goal".into(), plan, &config);
+
+        assert_ne!(first.run_id, second.run_id);
+        assert_ne!(first.log_dir, second.log_dir);
+    }
+
+    #[test]
     fn step_state_reset_on_advance() {
         let plan = Plan {
             steps: vec![crate::planner::PlanStep {
@@ -1626,6 +1756,21 @@ mod tests {
         assert_eq!(before.file_count, after.file_count);
     }
 
+    #[test]
+    fn fingerprint_v2_detects_same_size_change() {
+        let sandbox = TempSandbox::with_main_rs();
+        fs::write(sandbox.join("same.txt"), "abc").unwrap();
+        let before = compute_fingerprint(&sandbox);
+
+        fs::write(sandbox.join("same.txt"), "xyz").unwrap();
+        let after = compute_fingerprint(&sandbox);
+
+        assert_eq!(before.fingerprint_version, 2);
+        assert_eq!(before.total_bytes, after.total_bytes);
+        assert_eq!(before.file_count, after.file_count);
+        assert_ne!(before.hash, after.hash);
+    }
+
     // -- RunState round-trip ----------------------------------------------
 
     #[test]
@@ -1770,5 +1915,249 @@ mod tests {
             err,
             LoopError::TokenCapExceeded { used: 100, cap: 100 }
         ));
+    }
+
+    #[test]
+    fn checkpoint_refreshes_fingerprint_after_edit() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            ..RunConfig::default()
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let mut state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let before_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let before: RunState = serde_json::from_str(&before_json).unwrap();
+
+        fs::write(
+            sandbox.join("src/main.rs"),
+            "fn main() { println!(\"changed\"); }\n",
+        )
+        .unwrap();
+        state.refresh_fingerprint(&config.project_root);
+        state.checkpoint(&config);
+
+        let after_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let after: RunState = serde_json::from_str(&after_json).unwrap();
+        let current = compute_fingerprint(&sandbox);
+
+        assert_ne!(before.fingerprint.hash, after.fingerprint.hash);
+        assert_eq!(after.fingerprint.hash, current.hash);
+    }
+
+    #[test]
+    fn resume_after_agent_edit_without_force_succeeds() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 3,
+            max_total_iterations: 10,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let plan = Plan {
+            steps: vec![
+                PlanStep {
+                    description: "s0".into(),
+                    files: vec!["src/main.rs".into()],
+                },
+                PlanStep {
+                    description: "s1".into(),
+                    files: vec!["src/main.rs".into()],
+                },
+            ],
+        };
+
+        let mut state = RunState::new("goal".into(), plan, &config);
+        state.step_index = 1;
+        state.steps_completed = 1;
+        fs::write(
+            sandbox.join("src/main.rs"),
+            "fn main() { println!(\"agent edit\"); }\n",
+        )
+        .unwrap();
+        state.refresh_fingerprint(&config.project_root);
+        state.checkpoint(&config);
+
+        let provider = QueueProvider::from(vec![
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"resumed\"); }\n"}]}"#,
+        ]);
+        let report = resume(&provider, &config, false).unwrap();
+        assert_eq!(report.steps_completed, 2);
+    }
+
+    #[test]
+    fn resume_preserves_strict_mode_in_attempt_log() {
+        let sandbox = TempSandbox::with_main_rs();
+        let strict_config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Strict,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let caller_config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &strict_config);
+        state.checkpoint(&strict_config);
+
+        let provider = QueueProvider::from(vec![
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"strict\"); }\n"}]}"#,
+        ]);
+        let report = resume(&provider, &caller_config, false).unwrap();
+        assert_eq!(report.steps_completed, 1);
+
+        let log_path = sandbox.join(&state.log_dir).join("step_0_attempt_1.json");
+        let json = fs::read_to_string(log_path).unwrap();
+        let parsed: AttemptLog = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.run_mode, "strict");
+    }
+
+    #[test]
+    fn resume_preserves_dry_run_behavior() {
+        let sandbox = TempSandbox::with_main_rs();
+        let dry_run_config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let caller_config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: false,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &dry_run_config);
+        state.checkpoint(&dry_run_config);
+
+        let provider = QueueProvider::from(vec![
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"changed\"); }\n"}]}"#,
+        ]);
+        let report = resume(&provider, &caller_config, false).unwrap();
+        assert_eq!(report.steps_completed, 1);
+
+        let content = fs::read_to_string(sandbox.join("src/main.rs")).unwrap();
+        assert_eq!(content, "fn main() {}\n");
+    }
+
+    #[test]
+    fn legacy_state_without_profile_still_resumes() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let state_path = sandbox.join(".tod/state.json");
+        let state_json = fs::read_to_string(&state_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&state_json).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("profile")
+            .expect("new checkpoints include profile");
+        fs::write(
+            &state_path,
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+
+        let provider = QueueProvider::from(vec![
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"legacy\"); }\n"}]}"#,
+        ]);
+        let report = resume(&provider, &config, false).unwrap();
+        assert_eq!(report.steps_completed, 1);
+    }
+
+    #[test]
+    fn resume_legacy_fingerprint_version_compatible() {
+        let sandbox = TempSandbox::with_main_rs();
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 5,
+            dry_run: true,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                description: "s0".into(),
+                files: vec!["src/main.rs".into()],
+            }],
+        };
+        let state = RunState::new("goal".into(), plan, &config);
+        state.checkpoint(&config);
+
+        let state_path = sandbox.join(".tod/state.json");
+        let state_json = fs::read_to_string(&state_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&state_json).unwrap();
+        let fingerprint = value["fingerprint"]
+            .as_object_mut()
+            .expect("fingerprint must be object");
+        fingerprint.remove("fingerprint_version");
+        fingerprint.insert("hash".to_string(), serde_json::Value::String("legacy-hash".into()));
+        fs::write(
+            &state_path,
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+
+        let provider = QueueProvider::from(vec![
+            r#"{"edits":[{"action":"replace_range","path":"src/main.rs","start_line":1,"end_line":1,"content":"fn main() { println!(\"legacy v1\"); }\n"}]}"#,
+        ]);
+        let report = resume(&provider, &config, false).unwrap();
+        assert_eq!(report.steps_completed, 1);
     }
 }
