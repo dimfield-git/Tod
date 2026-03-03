@@ -3,6 +3,8 @@
 ## Operating Principles
 
 - **Suggest first, then wait.** Propose changes as diffs. Do not apply until approved. Always show a diff or exact file/line patch when proposing implementation — no prose-only suggestions.
+- **Do not implement in the same response as proposing a diff.** Wait for approval, then implement.
+- **When proposing changes, provide either a `git diff` style patch or a complete file replacement block.**
 - **Do not run commands without asking.** Suggest exact commands and wait for confirmation.
 - Prefer small, reviewable diffs — one logical change per task.
 - Follow existing patterns in the codebase. Do not invent new conventions.
@@ -11,8 +13,8 @@
 - Do not invent new public functions or types to make something compile. If unsure whether something exists, search the repo first or ask.
 - Preserve all existing tests unless a change explicitly requires modification.
 - When multiple approaches exist, state the tradeoff and recommend one.
-- **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and ask before proceeding.
-- **Priority order:** Current instructions (see next phase file, e.g. `PHASE13.md` when present) → Future phases.
+- **One phase at a time.** Do not work across phase boundaries. Complete and verify the current phase before starting the next. If a requested change touches files outside the current phase scope, stop and propose the minimal exception set before editing.
+- **Priority order:** `PHASE13.md` → Future phases.
 - **Per-task done:** Each change must include tests added/updated if applicable, a suggested verification step, and updates to docs/README/examples if CLI surface changed.
 
 ## Repo Identity
@@ -81,6 +83,8 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 - Resume must not issue LLM calls when checkpoint usage already meets or exceeds the token cap.
 - Stats request counts reflect all billed API calls (planner + editor). Planner usage is recorded in `plan.json`. Legacy logs without planner usage are handled gracefully.
 - Every run exit after planning produces `final.json` with an explicit terminal outcome. Stats uses `final.json` as source of truth when present and falls back to heuristic inference for legacy logs.
+- Checkpoint fingerprint must reflect workspace state at the moment of checkpoint write, not an earlier snapshot. `checkpoint()` is `&self`; callers refresh fingerprint before persisting.
+- Resume must use the originating run's execution profile (mode, dry-run, runner output cap) when a stored profile exists. Legacy checkpoints without a profile fall back to caller defaults.
 
 ## Phase History
 
@@ -98,3 +102,4 @@ Tests are inline (`#[cfg(test)] mod tests`) in each module. Shared test utilitie
 | 10 | External usability — naming consistency, --project flag, shared utilities, structured errors, LICENSE | ✅ Done |
 | 11 | Reliability accounting — pre-resume token cap guard, planner usage in plan.json, stats request count fix, field rename | ✅ Done |
 | 12 | Failure observability — terminal outcome log, pre-runner error logging, stats outcome fidelity | ✅ Done |
+| 13 | Resume determinism — checkpoint fingerprint freshness, execution profile persistence, content-aware drift detection, run ID hardening | 🔜 Next |
