@@ -119,7 +119,9 @@ Workflow safety invariants:
 - Stdout remains clean for command output and `--json` machine-readable output.
 
 Request counting semantics:
-- A request is one logical LLM intent: one plan call = 1 request, one edit call = 1 request.
+- `llm_requests` counts **observed provider responses**: calls where the provider was contacted and returned a response (success or API error).
+- A request sent upstream but lost before any response arrives is not counted. This is not "billed requests" and not "attempted requests."
+- One plan call = 1 request, one edit call = 1 request.
 - Internal retries in `llm.rs` do not increment the request count.
 - Usage fields (tokens) reflect what the successful response returned.
 - Retry observability (count, latency) is a separate concern for future phases if needed.
@@ -152,7 +154,7 @@ Request counting semantics:
 | 15 | Loop surface reduction + compatibility hardening | Done |
 | 16 | Operator usability + workflow safety | Done |
 | 17 | Observability fidelity + orchestration maintainability + operator UX | Done |
-| 18 | Observability integrity + operator control + output contract reliability | Planned |
+| 18 | Alpha integrity + operator control + output contract reliability | Planned |
 
 ## Phase 15 Outcomes
 
@@ -224,19 +226,23 @@ Locked decisions retained in implementation:
 ## Phase 18 Scope (Planned)
 
 Primary objective:
-- Harden observability and accounting integrity introduced in Phase 17.
-- Improve operator control over lifecycle output without breaking stdout contracts.
-- Continue behavior-preserving orchestration maintainability work.
+- Fix known accounting bugs and resolve semantic ambiguities to make output trustworthy for alpha validation.
+- Consolidate error-path boilerplate and eliminate code duplication.
+- Harden operator control with precise failure log pointers and `--quiet` flag.
+- Protect command-level output contracts with regression tests.
 
-Locked deliverables:
-1. **Accounting invariant hardening**: isolate and verify request/token accounting transitions under all terminal paths.
-2. **Precise failure log pointers**: improve run/resume error guidance with exact per-run log location when available.
-3. **Lifecycle output control**: add `--quiet` for run/resume to suppress cosmetic progress messages only.
-4. **Command output contract tests**: protect stdout/stderr behavior for human and `--json` modes.
-5. **Orchestration extraction**: continue pure-helper decomposition in `loop.rs` without semantic drift.
+Locked deliverables (Tasks 1–3 are alpha-critical, Tasks 4–7 follow validation checkpoint):
+1. **Accounting integrity**: fix plan-error request gap bug, fix pre-increment timing bug, add doc-comment semantic on `RunState::llm_requests`, add accounting contract tests.
+2. **Error-path boilerplate extraction**: consolidate `refresh_fingerprint → checkpoint → write_final_log → return Err` sequences into `terminate_run` helper.
+3. **`run_mode_label` dedup**: eliminate duplicate definition across `main.rs` and `loop.rs`.
+4. **Precise failure log pointers**: surface exact run-level log directory on failure when `run_id` is available.
+5. **Lifecycle output control**: add `--quiet` for run/resume to suppress cosmetic progress messages only.
+6. **Command output contract tests**: protect stdout/stderr behavior for human and `--json` modes.
+7. **Documentation and phase closure**.
 
 Design decisions locked for Phase 18:
 - No patch mode, provider expansion, or git worktree orchestration engine this phase.
+- Request-count semantic: `llm_requests` counts observed provider responses — calls where the provider was contacted and returned a response (success or API error). Transport-level retries within a single logical call are not counted.
+- `terminate_run` helper signature is guidance — adapt to borrow-checker realities, preserve consolidation intent.
 - `--quiet` must never suppress errors; it only gates cosmetic lifecycle messages.
 - Stdout remains clean for command output and machine-readable JSON payloads.
-- Request counting semantics remain strict: one logical plan/edit LLM call equals one request.
