@@ -26,12 +26,13 @@ pub enum PlanError {
     /// The LLM call itself failed.
     Llm(LlmError),
     /// Couldn't parse LLM output into a Plan.
-    Parse(String),
+    Parse { message: String, usage: Option<Usage> },
     /// Plan came back empty.
-    Empty,
+    Empty { usage: Option<Usage> },
     InvalidStep {
         index: usize,
         reason: String,
+        usage: Option<Usage>,
     },
 }
 
@@ -39,9 +40,9 @@ impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Llm(e) => write!(f, "llm error: {e}"),
-            Self::Parse(msg) => write!(f, "plan parse failed: {msg}"),
-            Self::Empty => write!(f, "plan has no steps"),
-            Self::InvalidStep { index, reason } => {
+            Self::Parse { message, .. } => write!(f, "plan parse failed: {message}"),
+            Self::Empty { .. } => write!(f, "plan has no steps"),
+            Self::InvalidStep { index, reason, .. } => {
                 write!(f, "invalid plan step {}: {reason}", index + 1)
             }
         }
@@ -53,6 +54,26 @@ impl std::error::Error for PlanError {}
 impl From<LlmError> for PlanError {
     fn from(e: LlmError) -> Self {
         Self::Llm(e)
+    }
+}
+
+impl PlanError {
+    /// Usage from the observed provider response, if available.
+    pub fn observed_usage(&self) -> Option<&Usage> {
+        match self {
+            Self::Parse { usage, .. } | Self::Empty { usage } | Self::InvalidStep { usage, .. } => {
+                usage.as_ref()
+            }
+            Self::Llm(_) => None,
+        }
+    }
+
+    /// Whether this error path observed a provider response.
+    pub fn response_observed(&self) -> bool {
+        match self {
+            Self::Llm(err) => err.response_observed(),
+            Self::Parse { .. } | Self::Empty { .. } | Self::InvalidStep { .. } => true,
+        }
     }
 }
 
@@ -94,28 +115,34 @@ pub fn create_plan(
 ) -> Result<(Plan, Option<Usage>), PlanError> {
     let user_msg = format!("## Goal\n{goal}\n\n## Project context\n{context}");
     let response = provider.complete(SYSTEM_PROMPT, &user_msg)?;
-    let plan = extract_json::<Plan>(&response.text).map_err(PlanError::Parse)?;
+    let usage = response.usage.clone();
+    let plan = extract_json::<Plan>(&response.text).map_err(|message| PlanError::Parse {
+        message,
+        usage: usage.clone(),
+    })?;
 
     if plan.steps.is_empty() {
-        return Err(PlanError::Empty);
+        return Err(PlanError::Empty { usage });
     }
-    validate_plan(&plan)?;
+    validate_plan(&plan, usage.clone())?;
 
     Ok((plan, response.usage))
 }
 
-fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
+fn validate_plan(plan: &Plan, usage: Option<Usage>) -> Result<(), PlanError> {
     for (index, step) in plan.steps.iter().enumerate() {
         if step.description.trim().is_empty() {
             return Err(PlanError::InvalidStep {
                 index,
                 reason: "empty description".to_string(),
+                usage: usage.clone(),
             });
         }
         if step.files.is_empty() {
             return Err(PlanError::InvalidStep {
                 index,
                 reason: "step has no files".to_string(),
+                usage: usage.clone(),
             });
         }
         for path in &step.files {
@@ -123,6 +150,7 @@ fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
                 return Err(PlanError::InvalidStep {
                     index,
                     reason: "contains empty file path".to_string(),
+                    usage: usage.clone(),
                 });
             }
             let p = Path::new(path);
@@ -130,6 +158,7 @@ fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
                 return Err(PlanError::InvalidStep {
                     index,
                     reason: format!("absolute path not allowed: {path}"),
+                    usage: usage.clone(),
                 });
             }
             if p.components()
@@ -138,6 +167,7 @@ fn validate_plan(plan: &Plan) -> Result<(), PlanError> {
                 return Err(PlanError::InvalidStep {
                     index,
                     reason: format!("path traversal not allowed: {path}"),
+                    usage: usage.clone(),
                 });
             }
         }
@@ -249,7 +279,7 @@ mod tests {
             response: r#"{"steps":[]}"#.to_string(),
         };
         let result = create_plan(&provider, "goal", "ctx");
-        assert!(matches!(result, Err(PlanError::Empty)));
+        assert!(matches!(result, Err(PlanError::Empty { .. })));
     }
 
     #[test]

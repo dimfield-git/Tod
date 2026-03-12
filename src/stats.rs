@@ -163,6 +163,10 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
     if !plan_path.exists() {
         if let Some(log) = final_log {
             if parse_final_outcome(&log.outcome) == Some(RunOutcome::PlanError) {
+                let input_tokens = log.input_tokens.unwrap_or(0);
+                let output_tokens = log.output_tokens.unwrap_or(0);
+                let total_tokens = input_tokens + output_tokens;
+                let llm_requests_plan = log.llm_requests.unwrap_or(1);
                 return Ok(RunSummary {
                     run_id: log.run_id,
                     goal: "(plan unavailable)".to_string(),
@@ -173,11 +177,11 @@ pub fn summarize_run(run_log_dir: &Path) -> Result<RunSummary, StatsError> {
                     total_attempts: 0,
                     attempts_per_step: vec![],
                     failure_stages: vec![],
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
-                    llm_requests_total: 1,
-                    llm_requests_plan: 1,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    llm_requests_total: llm_requests_plan,
+                    llm_requests_plan,
                     llm_requests_edit: 0,
                 });
             }
@@ -715,6 +719,39 @@ mod tests {
         .unwrap();
     }
 
+    fn write_final_with_accounting(
+        run_dir: &Path,
+        run_id: &str,
+        outcome: &str,
+        message: Option<&str>,
+        llm_requests: Option<u64>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) {
+        let mut value = json!({
+            "run_id": run_id,
+            "timestamp_utc": "2026-03-02T00:00:00Z",
+            "outcome": outcome
+        });
+        if let Some(message) = message {
+            value["message"] = json!(message);
+        }
+        if let Some(requests) = llm_requests {
+            value["llm_requests"] = json!(requests);
+        }
+        if let Some(input) = input_tokens {
+            value["input_tokens"] = json!(input);
+        }
+        if let Some(output) = output_tokens {
+            value["output_tokens"] = json!(output);
+        }
+        fs::write(
+            run_dir.join("final.json"),
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+    }
+
     fn sorted_json_keys(value: &serde_json::Value) -> Vec<String> {
         let mut keys = value
             .as_object()
@@ -822,6 +859,30 @@ mod tests {
         assert_eq!(summary.llm_requests_plan, 1);
         assert_eq!(summary.llm_requests_edit, 0);
         assert_eq!(summary.llm_requests_total, 1);
+    }
+
+    #[test]
+    fn summarize_run_plan_error_uses_final_log_accounting_when_present() {
+        let sandbox = TempSandbox::new();
+        let run_id = "20260303_010001";
+        let run_dir = sandbox.join(".tod/logs").join(run_id);
+        fs::create_dir_all(&run_dir).unwrap();
+        write_final_with_accounting(
+            &run_dir,
+            run_id,
+            "plan_error",
+            Some("transport failed"),
+            Some(0),
+            Some(13),
+            Some(5),
+        );
+
+        let summary = summarize_run(&run_dir).unwrap();
+        assert_eq!(summary.llm_requests_plan, 0);
+        assert_eq!(summary.llm_requests_total, 0);
+        assert_eq!(summary.input_tokens, 13);
+        assert_eq!(summary.output_tokens, 5);
+        assert_eq!(summary.total_tokens, 18);
     }
 
     #[test]

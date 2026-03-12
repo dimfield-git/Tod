@@ -87,7 +87,13 @@ pub fn write_attempt_log(log_dir: &Path, filename: &str, log: &AttemptLog) {
 
 /// Write a terminal `final.json` for failures that occur before `RunState` exists.
 /// Returns `Err` on I/O failure so callers can decide how to surface best-effort warnings.
-pub fn write_plan_error_artifact(log_dir: &Path, run_id: &str, message: &str) -> Result<(), io::Error> {
+pub fn write_plan_error_artifact(
+    log_dir: &Path,
+    run_id: &str,
+    message: &str,
+    usage: Option<crate::llm::Usage>,
+    llm_requests: u64,
+) -> Result<(), io::Error> {
     fs::create_dir_all(log_dir)?;
     let log = FinalLog {
         run_id: run_id.to_string(),
@@ -96,6 +102,9 @@ pub fn write_plan_error_artifact(log_dir: &Path, run_id: &str, message: &str) ->
         step_index: None,
         attempt: None,
         message: Some(message.to_string()),
+        input_tokens: usage.as_ref().map(|u| u.input_tokens),
+        output_tokens: usage.as_ref().map(|u| u.output_tokens),
+        llm_requests: Some(llm_requests),
     };
     let json = serde_json::to_string_pretty(&log).map_err(io::Error::other)?;
     fs::write(log_dir.join("final.json"), json)
@@ -117,7 +126,16 @@ mod tests {
         let sandbox = TempSandbox::new();
         let log_dir = sandbox.join(".tod/logs/test_run");
 
-        let result = write_plan_error_artifact(&log_dir, "test_run", "model refused");
+        let result = write_plan_error_artifact(
+            &log_dir,
+            "test_run",
+            "model refused",
+            Some(crate::llm::Usage {
+                input_tokens: 11,
+                output_tokens: 7,
+            }),
+            1,
+        );
         assert!(result.is_ok());
 
         let final_path = log_dir.join("final.json");
@@ -129,6 +147,9 @@ mod tests {
         assert_eq!(content.outcome, "plan_error");
         assert_eq!(content.message.as_deref(), Some("model refused"));
         assert!(content.step_index.is_none());
+        assert_eq!(content.input_tokens, Some(11));
+        assert_eq!(content.output_tokens, Some(7));
+        assert_eq!(content.llm_requests, Some(1));
     }
 
     #[test]

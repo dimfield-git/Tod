@@ -59,6 +59,12 @@ pub struct FinalLog {
     pub attempt: Option<usize>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub llm_requests: Option<u64>,
 }
 
 #[cfg(test)]
@@ -79,6 +85,9 @@ mod tests {
         assert!(final_log.step_index.is_none());
         assert!(final_log.attempt.is_none());
         assert!(final_log.message.is_none());
+        assert!(final_log.input_tokens.is_none());
+        assert!(final_log.output_tokens.is_none());
+        assert!(final_log.llm_requests.is_none());
 
         let attempt_json = serde_json::json!({
             "run_id": "r1",

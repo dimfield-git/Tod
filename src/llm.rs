@@ -38,6 +38,13 @@ impl std::fmt::Display for LlmError {
 
 impl std::error::Error for LlmError {}
 
+impl LlmError {
+    /// Whether this error indicates the provider returned a response.
+    pub fn response_observed(&self) -> bool {
+        matches!(self, Self::ApiError { .. } | Self::UnexpectedResponse(_))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Provider trait
 // ---------------------------------------------------------------------------

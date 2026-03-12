@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{RunConfig, RunMode};
+use crate::config::{run_mode_label, RunConfig, RunMode};
 use crate::context::{self, ContextError, MAX_TREE_DEPTH};
 use crate::editor::{create_edits, EditError};
 use crate::llm::{LlmProvider, Usage};
@@ -244,7 +244,9 @@ pub struct RunState {
     /// Accumulated token usage across all LLM calls in this run.
     #[serde(default)]
     pub usage: Usage,
-    /// Total token requests made in this run.
+    /// Observed provider responses — calls where a response was received
+    /// (success or API error). Requests lost before any response arrives are
+    /// not counted. Transport-level retries within one logical call are not counted.
     #[serde(default)]
     pub llm_requests: u64,
     /// Optional token cap (input + output combined). 0 = no cap.
@@ -330,6 +332,9 @@ impl RunState {
             step_index,
             attempt,
             message,
+            input_tokens: Some(self.usage.input_tokens),
+            output_tokens: Some(self.usage.output_tokens),
+            llm_requests: Some(self.llm_requests),
         };
         crate::loop_io::write_final_log(&dir, &log);
     }
@@ -491,13 +496,6 @@ fn final_attempt_for_attempt_counter(attempt: usize) -> Option<usize> {
 
 fn next_step_progress(step_index: usize, steps_completed: usize) -> (usize, usize) {
     (step_index + 1, steps_completed + 1)
-}
-
-fn run_mode_label(mode: RunMode) -> &'static str {
-    match mode {
-        RunMode::Default => "default",
-        RunMode::Strict => "strict",
-    }
 }
 
 fn preview_with_ellipsis(input: &str, max_chars: usize) -> String {
@@ -664,12 +662,16 @@ pub fn run(
     let (plan, plan_usage) = match create_plan(provider, goal, &project_context) {
         Ok(result) => result,
         Err(error) => {
+            let usage = error.observed_usage().cloned();
+            let llm_requests = u64::from(error.response_observed());
             let identity = crate::loop_io::allocate_run_identity(&config.project_root);
             let log_dir = config.project_root.join(&identity.log_dir);
             if let Err(write_error) = crate::loop_io::write_plan_error_artifact(
                 &log_dir,
                 &identity.run_id,
                 &error.to_string(),
+                usage,
+                llm_requests,
             )
             {
                 crate::warn!("failed to write plan_error final.json: {write_error}");
@@ -680,7 +682,9 @@ pub fn run(
 
     let mut state = RunState::new(goal.to_string(), plan, config);
     state.llm_requests += 1;
-    eprintln!("tod: plan ready -- {} step(s)", state.plan.steps.len());
+    if !config.quiet {
+        eprintln!("tod: plan ready -- {} step(s)", state.plan.steps.len());
+    }
     if let Some(usage) = &plan_usage {
         state.usage.accumulate(usage);
     }
@@ -734,6 +738,21 @@ fn check_token_cap(state: &RunState) -> Option<LoopError> {
     }
 }
 
+fn terminate_run(state: &mut RunState, config: &RunConfig, err: LoopError) -> LoopError {
+    state.refresh_fingerprint(&config.project_root);
+    state.checkpoint(config);
+    if let Some(outcome) = terminal_outcome_for_error(&err) {
+        state.write_final_log(
+            config,
+            outcome,
+            Some(state.step_index),
+            final_attempt_for_attempt_counter(state.step_state.attempt),
+            Some(err.to_string()),
+        );
+    }
+    err
+}
+
 /// Shared step loop used by both `run()` and `resume()`.
 fn run_from_state(
     provider: &dyn LlmProvider,
@@ -745,31 +764,25 @@ fn run_from_state(
         let step_label = state.step_index + 1;
         let total_steps = state.plan.steps.len();
         let step_description = preview_with_ellipsis(&step.description, 80);
-        eprintln!("tod: step {step_label}/{total_steps}: {step_description}");
+        if !config.quiet {
+            eprintln!("tod: step {step_label}/{total_steps}: {step_description}");
+        }
         let mut step_succeeded = false;
 
         while state.step_state.attempt < state.max_iterations_per_step {
             // --- Global cap guard ---
             if let Some(err) = check_iteration_cap(state) {
-                state.refresh_fingerprint(&config.project_root);
-                state.checkpoint(config);
-                state.write_final_log(
-                    config,
-                    terminal_outcome_for_error(&err).expect("cap reached outcome"),
-                    Some(state.step_index),
-                    final_attempt_for_attempt_counter(state.step_state.attempt),
-                    Some(err.to_string()),
-                );
-                return Err(err);
+                return Err(terminate_run(state, config, err));
             }
 
             state.step_state.attempt += 1;
             state.total_iterations += 1;
-            eprintln!(
-                "tod: step {step_label}/{total_steps}: attempt {}/{}",
-                state.step_state.attempt, state.max_iterations_per_step
-            );
-            state.llm_requests += 1;
+            if !config.quiet {
+                eprintln!(
+                    "tod: step {step_label}/{total_steps}: attempt {}/{}",
+                    state.step_state.attempt, state.max_iterations_per_step
+                );
+            }
 
             // --- Build file context, append retry feedback if present ---
             let mut file_context =
@@ -782,8 +795,23 @@ fn run_from_state(
             // --- Generate edits ---
             let (batch, call_usage) =
                 match create_edits(provider, &step, &file_context, &config.project_root) {
-                    Ok(result) => result,
+                    Ok((batch, call_usage)) => {
+                        state.llm_requests += 1;
+                        if let Some(usage) = &call_usage {
+                            state.usage.accumulate(usage);
+                        }
+                        (batch, call_usage)
+                    }
                     Err(source) => {
+                        let observed_response = source.response_observed();
+                        let call_usage = source.observed_usage().cloned();
+                        if observed_response {
+                            state.llm_requests += 1;
+                        }
+                        if let Some(usage) = &call_usage {
+                            state.usage.accumulate(usage);
+                        }
+
                         let output = source.to_string();
                         let err = LoopError::Edit {
                             step_index: state.step_index,
@@ -800,34 +828,13 @@ fn run_from_state(
                             &EditBatch { edits: vec![] },
                             &run_result,
                             "error",
-                            None,
+                            call_usage,
                         );
-                        state.refresh_fingerprint(&config.project_root);
-                        state.checkpoint(config);
-                        state.write_final_log(
-                            config,
-                            terminal_outcome_for_error(&err).expect("edit error outcome"),
-                            Some(state.step_index),
-                            Some(state.step_state.attempt),
-                            Some(err.to_string()),
-                        );
-                        return Err(err);
+                        return Err(terminate_run(state, config, err));
                     }
                 };
-            if let Some(usage) = &call_usage {
-                state.usage.accumulate(usage);
-            }
             if let Some(err) = check_token_cap(state) {
-                state.refresh_fingerprint(&config.project_root);
-                state.checkpoint(config);
-                state.write_final_log(
-                    config,
-                    terminal_outcome_for_error(&err).expect("token cap outcome"),
-                    Some(state.step_index),
-                    Some(state.step_state.attempt),
-                    Some(err.to_string()),
-                );
-                return Err(err);
+                return Err(terminate_run(state, config, err));
             }
 
             // --- Apply + run (or skip in dry-run) ---
@@ -847,16 +854,7 @@ fn run_from_state(
                         truncated: false,
                     };
                     state.write_attempt_log(config, &batch, &run_result, "error", None);
-                    state.refresh_fingerprint(&config.project_root);
-                    state.checkpoint(config);
-                    state.write_final_log(
-                        config,
-                        terminal_outcome_for_error(&err).expect("apply error outcome"),
-                        Some(state.step_index),
-                        Some(state.step_state.attempt),
-                        Some(err.to_string()),
-                    );
-                    return Err(err);
+                    return Err(terminate_run(state, config, err));
                 }
                 run_pipeline(config)
             };
@@ -868,24 +866,34 @@ fn run_from_state(
                 state.max_iterations_per_step,
             ));
             match handling.decision {
-                "proceed" => eprintln!(
-                    "tod: step {step_label}/{total_steps}: attempt {} -- passed",
-                    state.step_state.attempt
-                ),
-                "retry" => {
-                    let stage = match &run_result {
-                        RunResult::Failure { stage, .. } => stage.as_str(),
-                        RunResult::Success => "review",
-                    };
-                    eprintln!(
-                        "tod: step {step_label}/{total_steps}: attempt {} -- retrying ({} failed)",
-                        state.step_state.attempt, stage
-                    );
+                "proceed" => {
+                    if !config.quiet {
+                        eprintln!(
+                            "tod: step {step_label}/{total_steps}: attempt {} -- passed",
+                            state.step_state.attempt
+                        );
+                    }
                 }
-                "abort" => eprintln!(
-                    "tod: step {step_label}/{total_steps}: attempt {} -- aborted",
-                    state.step_state.attempt
-                ),
+                "retry" => {
+                    if !config.quiet {
+                        let stage = match &run_result {
+                            RunResult::Failure { stage, .. } => stage.as_str(),
+                            RunResult::Success => "review",
+                        };
+                        eprintln!(
+                            "tod: step {step_label}/{total_steps}: attempt {} -- retrying ({} failed)",
+                            state.step_state.attempt, stage
+                        );
+                    }
+                }
+                "abort" => {
+                    if !config.quiet {
+                        eprintln!(
+                            "tod: step {step_label}/{total_steps}: attempt {} -- aborted",
+                            state.step_state.attempt
+                        );
+                    }
+                }
                 _ => {}
             }
             state.write_attempt_log(
@@ -923,20 +931,11 @@ fn run_from_state(
         }
 
         if !step_succeeded {
-            state.refresh_fingerprint(&config.project_root);
-            state.checkpoint(config);
             let err = LoopError::Aborted {
                 step_index: state.step_index,
                 reason: "step did not reach success within per-step cap".to_string(),
             };
-            state.write_final_log(
-                config,
-                terminal_outcome_for_error(&err).expect("aborted outcome"),
-                Some(state.step_index),
-                Some(state.step_state.attempt),
-                Some(err.to_string()),
-            );
-            return Err(err);
+            return Err(terminate_run(state, config, err));
         }
 
         // --- Advance to next step with a clean StepState ---
@@ -977,6 +976,7 @@ pub fn resume(
             project_root: config.project_root.clone(),
             mode: profile.to_run_mode(),
             dry_run: profile.dry_run,
+            quiet: config.quiet,
             max_runner_output_bytes: profile.max_runner_output_bytes,
             max_iterations_per_step: state.max_iterations_per_step,
             max_total_iterations: state.max_total_iterations,
@@ -1028,14 +1028,16 @@ pub fn resume(
     };
     let goal_preview = preview_with_ellipsis(&state.goal, 60);
     let dry_run_label = if effective_config.dry_run { "on" } else { "off" };
-    eprintln!(
-        "tod: resuming \"{}\" from step {}/{} ({} mode, dry-run: {})",
-        goal_preview,
-        step_display,
-        total_steps,
-        run_mode_label(effective_config.mode),
-        dry_run_label
-    );
+    if !effective_config.quiet {
+        eprintln!(
+            "tod: resuming \"{}\" from step {}/{} ({} mode, dry-run: {})",
+            goal_preview,
+            step_display,
+            total_steps,
+            run_mode_label(effective_config.mode),
+            dry_run_label
+        );
+    }
 
     // Continue the step loop from where we left off
     run_from_state(provider, &effective_config, &mut state)
@@ -1080,6 +1082,39 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| LlmError::RequestFailed("no fake response queued".to_string()))?;
             Ok(LlmResponse { text, usage: None })
+        }
+    }
+
+    enum ScriptedCall {
+        Response {
+            text: String,
+            usage: Option<Usage>,
+        },
+        Error(LlmError),
+    }
+
+    struct ScriptedProvider {
+        calls: Mutex<VecDeque<ScriptedCall>>,
+    }
+
+    impl ScriptedProvider {
+        fn from(calls: Vec<ScriptedCall>) -> Self {
+            Self {
+                calls: Mutex::new(calls.into()),
+            }
+        }
+    }
+
+    impl LlmProvider for ScriptedProvider {
+        fn complete(&self, _system: &str, _user: &str) -> Result<LlmResponse, LlmError> {
+            let mut lock = self.calls.lock().unwrap();
+            match lock
+                .pop_front()
+                .ok_or_else(|| LlmError::RequestFailed("no scripted call queued".to_string()))?
+            {
+                ScriptedCall::Response { text, usage } => Ok(LlmResponse { text, usage }),
+                ScriptedCall::Error(err) => Err(err),
+            }
         }
     }
 
@@ -1266,14 +1301,20 @@ mod tests {
     fn terminal_outcome_for_error_table() {
         let cases = [
             (
-                LoopError::Plan(PlanError::Parse("bad json".to_string())),
+                LoopError::Plan(PlanError::Parse {
+                    message: "bad json".to_string(),
+                    usage: None,
+                }),
                 Some("plan_error"),
             ),
             (
                 LoopError::Edit {
                     step_index: 0,
                     iteration: 1,
-                    source: EditError::Parse("bad edits".to_string()),
+                    source: EditError::Parse {
+                        message: "bad edits".to_string(),
+                        usage: None,
+                    },
                 },
                 Some("edit_error"),
             ),
@@ -1381,6 +1422,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1408,7 +1450,10 @@ mod tests {
     fn loop_error_display_includes_actionable_guidance() {
         let cases = vec![
             (
-                LoopError::Plan(PlanError::Parse("bad json".to_string())),
+                LoopError::Plan(PlanError::Parse {
+                    message: "bad json".to_string(),
+                    usage: None,
+                }),
                 "plan failed:",
                 "check goal phrasing and project structure",
             ),
@@ -1416,7 +1461,10 @@ mod tests {
                 LoopError::Edit {
                     step_index: 0,
                     iteration: 1,
-                    source: EditError::Parse("bad edit json".to_string()),
+                    source: EditError::Parse {
+                        message: "bad edit json".to_string(),
+                        usage: None,
+                    },
                 },
                 "edit creation failed (step 1, iteration 1):",
                 "review the attempt log in .tod/logs/",
@@ -1498,6 +1546,7 @@ mod tests {
             max_iterations_per_step: 5,
             max_total_iterations: 1,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1521,6 +1570,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1554,6 +1604,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1590,6 +1641,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 1,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1612,21 +1664,32 @@ mod tests {
     }
 
     #[test]
-    fn run_plan_error_writes_terminal_artifact() {
+    fn run_plan_error_writes_terminal_artifact_with_observed_request() {
         let sandbox = TempSandbox::with_main_rs();
-        let provider = QueueProvider::from(vec!["not json"]);
+        let provider = ScriptedProvider::from(vec![ScriptedCall::Response {
+            text: "not json".to_string(),
+            usage: Some(Usage {
+                input_tokens: 9,
+                output_tokens: 4,
+            }),
+        }]);
         let config = RunConfig {
             project_root: sandbox.to_path_buf(),
             mode: RunMode::Default,
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
 
         let err = run(&provider, "goal", &config).unwrap_err();
         assert!(matches!(err, LoopError::Plan(_)));
+        assert!(
+            !sandbox.join(".tod/state.json").exists(),
+            "planner failure occurs before RunState creation"
+        );
 
         let logs_root = sandbox.join(".tod/logs");
         let mut entries: Vec<_> = fs::read_dir(&logs_root)
@@ -1644,6 +1707,106 @@ mod tests {
         assert_eq!(parsed.run_id, run_dir_name);
         assert_eq!(parsed.outcome, "plan_error");
         assert!(parsed.message.is_some());
+        assert!(parsed.llm_requests.unwrap_or(0) >= 1);
+        assert_eq!(parsed.input_tokens, Some(9));
+        assert_eq!(parsed.output_tokens, Some(4));
+    }
+
+    #[test]
+    fn edit_error_after_observed_response_counts_request() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = ScriptedProvider::from(vec![
+            ScriptedCall::Response {
+                text: r#"{"steps":[{"description":"s0","files":["src/main.rs"]}]}"#.to_string(),
+                usage: None,
+            },
+            ScriptedCall::Response {
+                text: "not json".to_string(),
+                usage: Some(Usage {
+                    input_tokens: 3,
+                    output_tokens: 2,
+                }),
+            },
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            quiet: false,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Edit { .. }));
+
+        let state_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let state: RunState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.llm_requests, 2);
+    }
+
+    #[test]
+    fn plan_error_before_provider_response_records_zero_requests() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = ScriptedProvider::from(vec![ScriptedCall::Error(LlmError::RequestFailed(
+            "transport offline".to_string(),
+        ))]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            quiet: false,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Plan(_)));
+
+        let logs_root = sandbox.join(".tod/logs");
+        let mut entries: Vec<_> = fs::read_dir(&logs_root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        entries.sort();
+        assert_eq!(entries.len(), 1);
+        let final_json = fs::read_to_string(entries[0].join("final.json")).unwrap();
+        let parsed: crate::log_schema::FinalLog = serde_json::from_str(&final_json).unwrap();
+        assert_eq!(parsed.llm_requests, Some(0));
+    }
+
+    #[test]
+    fn edit_error_before_provider_response_does_not_count_request() {
+        let sandbox = TempSandbox::with_main_rs();
+        let provider = ScriptedProvider::from(vec![
+            ScriptedCall::Response {
+                text: r#"{"steps":[{"description":"s0","files":["src/main.rs"]}]}"#.to_string(),
+                usage: None,
+            },
+            ScriptedCall::Error(LlmError::RequestFailed("transport offline".to_string())),
+        ]);
+        let config = RunConfig {
+            project_root: sandbox.to_path_buf(),
+            mode: RunMode::Default,
+            max_iterations_per_step: 2,
+            max_total_iterations: 3,
+            dry_run: true,
+            quiet: false,
+            max_runner_output_bytes: 4096,
+            max_tokens: 0,
+        };
+
+        let err = run(&provider, "goal", &config).unwrap_err();
+        assert!(matches!(err, LoopError::Edit { .. }));
+
+        let state_json = fs::read_to_string(sandbox.join(".tod/state.json")).unwrap();
+        let state: RunState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(state.llm_requests, 1);
     }
 
     #[test]
@@ -1691,6 +1854,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1743,6 +1907,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: false,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1795,6 +1960,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -1853,6 +2019,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 1,
         };
@@ -1889,6 +2056,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2185,6 +2353,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 3,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2462,6 +2631,7 @@ mod tests {
             max_iterations_per_step: 3,
             max_total_iterations: 10,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2593,6 +2763,7 @@ mod tests {
             max_iterations_per_step: 3,
             max_total_iterations: 10,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2636,6 +2807,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2645,6 +2817,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2678,6 +2851,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2687,6 +2861,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: false,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2718,6 +2893,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };
@@ -2790,6 +2966,7 @@ mod tests {
             max_iterations_per_step: 2,
             max_total_iterations: 5,
             dry_run: true,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         };

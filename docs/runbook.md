@@ -12,6 +12,7 @@ This runbook is for day-to-day `tod` operation decisions, not implementation det
 | Complex multi-file refactor | `tod run --strict --max-iters 8 --max-tokens 120000 "<goal>"` | More retries plus a global budget reduces unbounded runs on hard tasks. |
 | Continue interrupted run after crash/stop | `tod resume` | Reuses checkpointed state/profile and continues remaining work. |
 | Continue despite intentional local drift | `tod resume --force` | Overrides fingerprint mismatch when operator accepts drift risk. |
+| Keep logs quiet during scripted operation | `tod run --quiet "<goal>"` or `tod resume --quiet` | Suppresses lifecycle progress chatter while preserving warnings/errors and stdout output. |
 
 ## Cap Tuning Guidance
 
@@ -57,7 +58,8 @@ Practical rule:
 
 Actionable runtime errors:
 - `run`/`resume` failures include operator guidance in the error text.
-- CLI failures also print `tod: logs at .tod/logs/` to direct inspection quickly.
+- CLI failures print `tod: logs at .tod/logs/<run_id>/` when checkpoint context is available.
+- Pre-allocation failures (for example planner/context failures before run identity is available) fall back to `tod: logs at .tod/logs/`.
 
 ## Machine-Readable Output
 
@@ -65,6 +67,7 @@ Use JSON mode for scripting and dashboards:
 - `tod status --json` prints exactly one JSON object on stdout.
 - `tod stats --json` prints exactly one JSON object on stdout.
 - Human progress/warnings/errors remain on stderr; do not parse stderr as data.
+- `--quiet` only suppresses cosmetic lifecycle progress lines; it does not suppress stderr errors.
 
 `tod status --json` contract fields:
 - `run_id`, `goal`, `outcome`, `terminal_message`

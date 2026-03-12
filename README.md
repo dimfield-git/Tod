@@ -10,8 +10,8 @@ Core design principle: LLM generates intent; deterministic Rust code constrains 
 
 ## Current Status
 
-- Phases 1-17 complete
-- Baseline validation: `cargo test` (`215 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
+- Phases 1-18 complete
+- Baseline validation: `cargo test` (`229 passed, 1 ignored`) and `cargo clippy -- -D warnings` clean
 
 ## Requirements
 
@@ -38,13 +38,13 @@ cargo run -- stats --project ./myproject --last 5
 cargo run -- stats --project ./myproject --last 5 --json
 ```
 
-During `run`/`resume`, Tod emits lifecycle progress to stderr (startup, plan, step/attempt/review, resume confirmation). Stdout remains reserved for command output and `--json` payloads.
+During `run`/`resume`, Tod emits lifecycle progress to stderr (startup, plan, step/attempt/review, resume confirmation). Use `--quiet` to suppress those cosmetic lifecycle lines; stderr warnings/errors and stdout command output remain unchanged.
 
 ## Commands
 
 - `init <name>`
-- `run [--project <path>] [--strict] [--max-iters <N>] [--dry-run] [--max-tokens <N>] <goal>`
-- `resume [--project <path>] [--force]`
+- `run [--project <path>] [--strict] [--max-iters <N>] [--dry-run] [--quiet] [--max-tokens <N>] <goal>`
+- `resume [--project <path>] [--force] [--quiet]`
 - `status [--project <path>] [--json]`
 - `stats [--project <path>] [--last <N>] [--json]`
 
@@ -59,6 +59,7 @@ Operator guidance:
 - default mode pipeline: `cargo build`, then `cargo test`
 - `--max-iters <N>`: max iterations per step (`N >= 1`)
 - `--dry-run`: generate/validate/log edits without writing files or running cargo
+- `--quiet`: suppress lifecycle progress messages (errors still print to stderr)
 - `--max-tokens <N>`: global token cap (`input + output`, `0` disables cap)
 
 ## Runtime Artifacts
@@ -141,5 +142,4 @@ Interactive architecture reference:
 
 ## Outlook
 <img width="1536" height="1024" alt="ChatGPT Image Mar 4, 2026, 12_04_53 AM" src="https://github.com/user-attachments/assets/8dd47003-6b80-4121-b95c-f489654ba673" />
-
 

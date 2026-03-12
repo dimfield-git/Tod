@@ -60,6 +60,13 @@ pub enum Command {
         )]
         dry_run: bool,
 
+        /// Suppress lifecycle progress messages (errors still print).
+        #[arg(
+            long,
+            help = "Suppress lifecycle progress messages; errors and command output still print"
+        )]
+        quiet: bool,
+
         /// Max total tokens (input + output) for the entire run. 0 = no limit.
         #[arg(
             long,
@@ -81,6 +88,13 @@ pub enum Command {
             help = "Continue even if workspace has changed since last checkpoint"
         )]
         force: bool,
+
+        /// Suppress lifecycle progress messages (errors still print).
+        #[arg(
+            long,
+            help = "Suppress lifecycle progress messages; errors and command output still print"
+        )]
+        quiet: bool,
     },
 
     /// Show the status of the last run.
@@ -125,6 +139,7 @@ impl Command {
                 strict,
                 max_iters,
                 dry_run,
+                quiet,
                 max_tokens,
             } => {
                 let config = RunConfig {
@@ -137,6 +152,7 @@ impl Command {
                     max_iterations_per_step: max_iters,
                     max_total_iterations: max_iters.saturating_mul(5),
                     dry_run,
+                    quiet,
                     max_tokens,
                     ..RunConfig::default()
                 };
@@ -179,6 +195,7 @@ mod tests {
                 strict,
                 max_iters,
                 dry_run,
+                quiet,
                 max_tokens,
                 ..
             } => {
@@ -186,6 +203,7 @@ mod tests {
                 assert!(!strict);
                 assert_eq!(max_iters, 5);
                 assert!(!dry_run);
+                assert!(!quiet);
                 assert_eq!(max_tokens, 0);
             }
             other => panic!("expected Run, got {other:?}"),
@@ -227,6 +245,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_run_quiet() {
+        let cli = parse(&["tod", "run", "--quiet", "test goal"]);
+        match cli.command {
+            Command::Run { quiet, .. } => assert!(quiet),
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_init() {
         let cli = parse(&["tod", "init", "myproject"]);
         assert!(matches!(cli.command, Command::Init { name } if name == "myproject"));
@@ -263,6 +290,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_resume_with_quiet() {
+        let cli = parse(&["tod", "resume", "--quiet", "--force"]);
+        assert!(matches!(
+            cli.command,
+            Command::Resume {
+                project,
+                force,
+                quiet
+            } if project == PathBuf::from(".") && force && quiet
+        ));
+    }
+
+    #[test]
     fn parse_stats_with_last() {
         let cli = parse(&["tod", "stats", "--last", "9"]);
         assert!(matches!(
@@ -285,13 +325,14 @@ mod tests {
 
     #[test]
     fn run_config_conversion() {
-        let cli = parse(&["tod", "run", "--strict", "--max-iters", "8", "do stuff"]);
+        let cli = parse(&["tod", "run", "--strict", "--quiet", "--max-iters", "8", "do stuff"]);
         let (goal, config) = cli.command.into_run_config().unwrap();
         assert_eq!(goal, "do stuff");
         assert_eq!(config.mode, RunMode::Strict);
         assert_eq!(config.max_iterations_per_step, 8);
         assert_eq!(config.max_total_iterations, 40);
         assert!(!config.dry_run);
+        assert!(config.quiet);
         assert_eq!(config.max_runner_output_bytes, 4096);
         assert_eq!(config.max_tokens, 0);
     }

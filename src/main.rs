@@ -21,14 +21,39 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::cli::{Cli, Command};
-use crate::config::RunMode;
+use crate::config::run_mode_label;
 use crate::llm::AnthropicProvider;
 
-fn run_mode_label(mode: RunMode) -> &'static str {
-    match mode {
-        RunMode::Default => "default",
-        RunMode::Strict => "strict",
+fn read_checkpoint_log_dir(project_root: &Path) -> Option<String> {
+    let state_path = project_root.join(".tod/state.json");
+    let raw = fs::read_to_string(state_path).ok()?;
+    let state: crate::r#loop::RunState = serde_json::from_str(&raw).ok()?;
+    if state.log_dir.trim().is_empty() {
+        return None;
     }
+    Some(format!("{}/", state.log_dir.trim_end_matches('/')))
+}
+
+fn supports_precise_log_pointer(err: &crate::r#loop::LoopError) -> bool {
+    matches!(
+        err,
+        crate::r#loop::LoopError::Edit { .. }
+            | crate::r#loop::LoopError::Apply { .. }
+            | crate::r#loop::LoopError::Aborted { .. }
+            | crate::r#loop::LoopError::TotalIterationCap { .. }
+            | crate::r#loop::LoopError::TokenCapExceeded { .. }
+            | crate::r#loop::LoopError::InvalidPlanPath { .. }
+            | crate::r#loop::LoopError::FingerprintMismatch { .. }
+    )
+}
+
+fn failure_log_pointer(project_root: &Path, err: &crate::r#loop::LoopError) -> String {
+    if supports_precise_log_pointer(err) {
+        if let Some(pointer) = read_checkpoint_log_dir(project_root) {
+            return pointer;
+        }
+    }
+    ".tod/logs/".to_string()
 }
 
 fn main() {
@@ -49,24 +74,26 @@ fn main() {
                 }
             };
 
-            if config.dry_run {
-                eprintln!(
-                    "tod: dry-run mode on {} (no filesystem writes)",
-                    config.project_root.display()
-                );
-            } else {
-                let token_cap_description = if config.max_tokens == 0 {
-                    "no token cap".to_string()
+            if !config.quiet {
+                if config.dry_run {
+                    eprintln!(
+                        "tod: dry-run mode on {} (no filesystem writes)",
+                        config.project_root.display()
+                    );
                 } else {
-                    format!("max {} tokens", config.max_tokens)
-                };
-                eprintln!(
-                    "tod: running in {} mode on {} (max {} iters/step, {})",
-                    run_mode_label(config.mode),
-                    config.project_root.display(),
-                    config.max_iterations_per_step,
-                    token_cap_description
-                );
+                    let token_cap_description = if config.max_tokens == 0 {
+                        "no token cap".to_string()
+                    } else {
+                        format!("max {} tokens", config.max_tokens)
+                    };
+                    eprintln!(
+                        "tod: running in {} mode on {} (max {} iters/step, {})",
+                        run_mode_label(config.mode),
+                        config.project_root.display(),
+                        config.max_iterations_per_step,
+                        token_cap_description
+                    );
+                }
             }
 
             match r#loop::run(&provider, &goal, &config) {
@@ -85,7 +112,7 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("run failed: {e}");
-                    eprintln!("tod: logs at .tod/logs/");
+                    eprintln!("tod: logs at {}", failure_log_pointer(&config.project_root, &e));
                     std::process::exit(1);
                 }
             }
@@ -97,7 +124,11 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Resume { project, force } => {
+        Command::Resume {
+            project,
+            force,
+            quiet,
+        } => {
             let provider = match AnthropicProvider::from_env() {
                 Ok(p) => p,
                 Err(e) => {
@@ -108,6 +139,7 @@ fn main() {
 
             let config = crate::config::RunConfig {
                 project_root: project,
+                quiet,
                 ..crate::config::RunConfig::default()
             };
 
@@ -127,7 +159,7 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("resume failed: {e}");
-                    eprintln!("tod: logs at .tod/logs/");
+                    eprintln!("tod: logs at {}", failure_log_pointer(&config.project_root, &e));
                     std::process::exit(1);
                 }
             }
@@ -217,13 +249,47 @@ fn append_tod_gitignore(project_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::EditError;
+    use crate::llm::LlmError;
+    use crate::r#loop::LoopError;
     use crate::test_util::TempSandbox;
+    use serde_json::json;
 
     fn count_tod_entries(contents: &str) -> usize {
         contents
             .lines()
             .filter(|line| line.trim() == ".tod/")
             .count()
+    }
+
+    fn write_state_with_log_dir(project_root: &Path, run_id: &str, log_dir: &str) {
+        let state = json!({
+            "goal": "goal",
+            "plan": { "steps": [ { "description": "s", "files": ["src/main.rs"] } ] },
+            "step_index": 0,
+            "step_state": { "attempt": 0, "retry_context": null },
+            "steps_completed": 0,
+            "total_iterations": 0,
+            "max_iterations_per_step": 5,
+            "max_total_iterations": 25,
+            "run_id": run_id,
+            "log_dir": log_dir,
+            "last_log_path": null,
+            "fingerprint": {
+                "fingerprint_version": 2,
+                "file_count": 0,
+                "total_bytes": 0,
+                "hash": "h"
+            }
+        });
+
+        let tod_dir = project_root.join(".tod");
+        fs::create_dir_all(&tod_dir).unwrap();
+        fs::write(
+            tod_dir.join("state.json"),
+            serde_json::to_string_pretty(&state).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -277,5 +343,40 @@ mod tests {
         let project = project_dir.to_str().unwrap();
         let result = init_project(project);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn failure_log_pointer_prefers_checkpoint_log_dir_for_terminal_error() {
+        let sandbox = TempSandbox::new();
+        write_state_with_log_dir(&sandbox, "run_x", ".tod/logs/run_x");
+        let err = LoopError::Edit {
+            step_index: 0,
+            iteration: 1,
+            source: EditError::Llm(LlmError::RequestFailed("x".to_string())),
+        };
+
+        let pointer = failure_log_pointer(&sandbox, &err);
+        assert_eq!(pointer, ".tod/logs/run_x/");
+    }
+
+    #[test]
+    fn failure_log_pointer_falls_back_for_plan_errors() {
+        let sandbox = TempSandbox::new();
+        write_state_with_log_dir(&sandbox, "old_run", ".tod/logs/old_run");
+        let err = LoopError::Plan(crate::planner::PlanError::Llm(LlmError::RequestFailed(
+            "transport".to_string(),
+        )));
+
+        let pointer = failure_log_pointer(&sandbox, &err);
+        assert_eq!(pointer, ".tod/logs/");
+    }
+
+    #[test]
+    fn failure_log_pointer_falls_back_without_checkpoint() {
+        let sandbox = TempSandbox::new();
+        let err = LoopError::TokenCapExceeded { used: 2, cap: 1 };
+
+        let pointer = failure_log_pointer(&sandbox, &err);
+        assert_eq!(pointer, ".tod/logs/");
     }
 }

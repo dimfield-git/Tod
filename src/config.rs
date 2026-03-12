@@ -13,6 +13,13 @@ pub enum RunMode {
     Strict,
 }
 
+pub fn run_mode_label(mode: RunMode) -> &'static str {
+    match mode {
+        RunMode::Default => "default",
+        RunMode::Strict => "strict",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Run config
 // ---------------------------------------------------------------------------
@@ -38,6 +45,9 @@ pub struct RunConfig {
     /// If true, validate and log edits but don't write to disk or run cargo.
     pub dry_run: bool,
 
+    /// If true, suppress cosmetic lifecycle progress messages.
+    pub quiet: bool,
+
     /// Max bytes of runner output (compiler errors, test failures) to keep.
     /// Truncated output is snapped to the nearest line boundary.
     /// Keeps context budget sane for the fixer LLM call.
@@ -59,6 +69,7 @@ impl Default for RunConfig {
             max_iterations_per_step: 5,
             max_total_iterations: 25,
             dry_run: false,
+            quiet: false,
             max_runner_output_bytes: 4096,
             max_tokens: 0,
         }
@@ -78,6 +89,7 @@ mod tests {
         let cfg = RunConfig::default();
         assert_eq!(cfg.mode, RunMode::Default);
         assert!(!cfg.dry_run);
+        assert!(!cfg.quiet);
         assert!(cfg.max_iterations_per_step > 0);
         assert!(cfg.max_total_iterations >= cfg.max_iterations_per_step);
         assert_eq!(cfg.max_runner_output_bytes, 4096);
@@ -87,5 +99,11 @@ mod tests {
     #[test]
     fn strict_mode_is_distinct() {
         assert_ne!(RunMode::Default, RunMode::Strict);
+    }
+
+    #[test]
+    fn run_mode_labels_are_stable() {
+        assert_eq!(run_mode_label(RunMode::Default), "default");
+        assert_eq!(run_mode_label(RunMode::Strict), "strict");
     }
 }

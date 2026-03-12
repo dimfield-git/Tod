@@ -14,7 +14,7 @@
 ## Definition of Done
 
 A change is complete only when:
-- `cargo test` passes (baseline: **215 passed, 1 ignored**)
+- `cargo test` passes (baseline: **229 passed, 1 ignored**)
 - `cargo clippy -- -D warnings` is clean
 - behavior and docs are aligned for any changed runtime surface
 
@@ -33,8 +33,7 @@ Platform assumptions:
 - blocking execution model (no async runtime)
 
 Current phase state:
-- Phases 1-17 complete
-- Phase 18 planned (see `PHASE18.md`)
+- Phases 1-18 complete
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -116,6 +115,7 @@ Workflow safety invariants:
 - The dirty-workspace check is silent when git is unavailable or the project is not a git repo.
 - The dirty-workspace check does not apply to `resume` (fingerprint check covers drift) or `--dry-run` (no mutation).
 - Lifecycle progress messages are stderr-only cosmetic output (`eprintln!`): best-effort, non-blocking, and never allowed to affect control flow, return values, or exit codes.
+- `--quiet` suppresses cosmetic lifecycle progress messages for `run`/`resume` only; warnings and errors still print to stderr.
 - Stdout remains clean for command output and `--json` machine-readable output.
 
 Request counting semantics:
@@ -124,6 +124,7 @@ Request counting semantics:
 - One plan call = 1 request, one edit call = 1 request.
 - Internal retries in `llm.rs` do not increment the request count.
 - Usage fields (tokens) reflect what the successful response returned.
+- `RunState::llm_requests` doc-comment semantics must stay aligned with this contract.
 - Retry observability (count, latency) is a separate concern for future phases if needed.
 
 ## Quality and Testing Expectations
@@ -154,7 +155,7 @@ Request counting semantics:
 | 15 | Loop surface reduction + compatibility hardening | Done |
 | 16 | Operator usability + workflow safety | Done |
 | 17 | Observability fidelity + orchestration maintainability + operator UX | Done |
-| 18 | Alpha integrity + operator control + output contract reliability | Planned |
+| 18 | Alpha integrity + operator control + output contract reliability | Done |
 
 ## Phase 15 Outcomes
 
@@ -246,3 +247,18 @@ Design decisions locked for Phase 18:
 - `terminate_run` helper signature is guidance — adapt to borrow-checker realities, preserve consolidation intent.
 - `--quiet` must never suppress errors; it only gates cosmetic lifecycle messages.
 - Stdout remains clean for command output and machine-readable JSON payloads.
+
+## Phase 18 Outcomes
+
+Completed outcomes:
+- Fixed accounting integrity bugs: plan-error final artifacts now record observed-request counts and plan usage when available; edit-call request counting now occurs after call outcomes with pre-contact failures excluded.
+- Consolidated repeated error teardown logic in `loop.rs` behind `terminate_run` without changing terminal outcome policy.
+- Deduplicated `run_mode_label` into a single shared helper in `config.rs`.
+- Improved operator failure recovery with precise run-level log pointers at the CLI boundary when checkpoint context is available.
+- Added `--quiet` for `run` and `resume` to suppress lifecycle chatter while preserving stderr warnings/errors and stdout contracts.
+- Added command-level output contract integration tests covering `status`/`stats` human vs JSON paths, quiet suppression behavior, and stderr/stdout separation on failures.
+
+Locked decisions retained in implementation:
+- No patch mode, provider expansion, or git worktree orchestration engine.
+- `--quiet` remains cosmetic output policy only.
+- Stdout remains reserved for command output and JSON payloads.

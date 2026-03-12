@@ -14,17 +14,23 @@ pub enum EditError {
     /// The LLM call itself failed.
     Llm(LlmError),
     /// Couldn't parse LLM output into an EditBatch.
-    Parse(String),
+    Parse {
+        message: String,
+        usage: Option<Usage>,
+    },
     /// Parsed but failed validation.
-    Validation(ValidationError),
+    Validation {
+        source: ValidationError,
+        usage: Option<Usage>,
+    },
 }
 
 impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Llm(e) => write!(f, "llm error: {e}"),
-            Self::Parse(msg) => write!(f, "edit parse failed: {msg}"),
-            Self::Validation(e) => write!(f, "edit validation failed: {e}"),
+            Self::Parse { message, .. } => write!(f, "edit parse failed: {message}"),
+            Self::Validation { source, .. } => write!(f, "edit validation failed: {source}"),
         }
     }
 }
@@ -39,7 +45,28 @@ impl From<LlmError> for EditError {
 
 impl From<ValidationError> for EditError {
     fn from(e: ValidationError) -> Self {
-        Self::Validation(e)
+        Self::Validation {
+            source: e,
+            usage: None,
+        }
+    }
+}
+
+impl EditError {
+    /// Usage from the observed provider response, if available.
+    pub fn observed_usage(&self) -> Option<&Usage> {
+        match self {
+            Self::Parse { usage, .. } | Self::Validation { usage, .. } => usage.as_ref(),
+            Self::Llm(_) => None,
+        }
+    }
+
+    /// Whether this error path observed a provider response.
+    pub fn response_observed(&self) -> bool {
+        match self {
+            Self::Llm(err) => err.response_observed(),
+            Self::Parse { .. } | Self::Validation { .. } => true,
+        }
     }
 }
 
@@ -92,10 +119,17 @@ pub fn create_edits(
     );
 
     let response = provider.complete(SYSTEM_PROMPT, &user_msg)?;
+    let usage = response.usage.clone();
 
-    let batch = extract_json::<EditBatch>(&response.text).map_err(EditError::Parse)?;
+    let batch = extract_json::<EditBatch>(&response.text).map_err(|message| EditError::Parse {
+        message,
+        usage: usage.clone(),
+    })?;
 
-    validate_batch(&batch, sandbox_root)?;
+    validate_batch(&batch, sandbox_root).map_err(|source| EditError::Validation {
+        source,
+        usage,
+    })?;
 
     Ok((batch, response.usage))
 }
@@ -178,7 +212,7 @@ mod tests {
                     .into(),
         };
         let result = create_edits(&provider, &test_step(), "", &sandbox());
-        assert!(matches!(result, Err(EditError::Validation(_))));
+        assert!(matches!(result, Err(EditError::Validation { .. })));
     }
 
     #[test]
@@ -188,7 +222,7 @@ mod tests {
                 .into(),
         };
         let result = create_edits(&provider, &test_step(), "", &sandbox());
-        assert!(matches!(result, Err(EditError::Validation(_))));
+        assert!(matches!(result, Err(EditError::Validation { .. })));
     }
 
     #[test]
@@ -197,7 +231,7 @@ mod tests {
             response: "totally not json".into(),
         };
         let result = create_edits(&provider, &test_step(), "", &sandbox());
-        assert!(matches!(result, Err(EditError::Parse(_))));
+        assert!(matches!(result, Err(EditError::Parse { .. })));
     }
 
     #[test]
