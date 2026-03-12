@@ -34,6 +34,7 @@ Platform assumptions:
 
 Current phase state:
 - Phases 1-18 complete
+- Phase 19 planned (see `PHASE19.md`)
 
 Core design principle:
 - **LLM generates intent; deterministic Rust code constrains execution.**
@@ -61,6 +62,7 @@ src/
 
 docs/
   runbook.md                        operator decision guidance (Phase 16)
+  alpha-user-test.md                alpha route, operator workflow, and reporting template
   ux-audit-2026-03-03.md            UX gap analysis and recommendations
   phase*-implementation-*.md        phase implementation logs
   codebase-assessment.md            architecture and risk assessment
@@ -156,6 +158,7 @@ Request counting semantics:
 | 16 | Operator usability + workflow safety | Done |
 | 17 | Observability fidelity + orchestration maintainability + operator UX | Done |
 | 18 | Alpha integrity + operator control + output contract reliability | Done |
+| 19 | Alpha validation + precision scaling | Planned |
 
 ## Phase 15 Outcomes
 
@@ -224,30 +227,6 @@ Locked decisions retained in implementation:
 - No changes to path safety, transactional apply/rollback semantics, or compatibility defaults.
 - No new feature-surface expansions (patch mode, provider expansion, git worktree orchestration, or quiet-mode flag).
 
-## Phase 18 Scope (Planned)
-
-Primary objective:
-- Fix known accounting bugs and resolve semantic ambiguities to make output trustworthy for alpha validation.
-- Consolidate error-path boilerplate and eliminate code duplication.
-- Harden operator control with precise failure log pointers and `--quiet` flag.
-- Protect command-level output contracts with regression tests.
-
-Locked deliverables (Tasks 1–3 are alpha-critical, Tasks 4–7 follow validation checkpoint):
-1. **Accounting integrity**: fix plan-error request gap bug, fix pre-increment timing bug, add doc-comment semantic on `RunState::llm_requests`, add accounting contract tests.
-2. **Error-path boilerplate extraction**: consolidate `refresh_fingerprint → checkpoint → write_final_log → return Err` sequences into `terminate_run` helper.
-3. **`run_mode_label` dedup**: eliminate duplicate definition across `main.rs` and `loop.rs`.
-4. **Precise failure log pointers**: surface exact run-level log directory on failure when `run_id` is available.
-5. **Lifecycle output control**: add `--quiet` for run/resume to suppress cosmetic progress messages only.
-6. **Command output contract tests**: protect stdout/stderr behavior for human and `--json` modes.
-7. **Documentation and phase closure**.
-
-Design decisions locked for Phase 18:
-- No patch mode, provider expansion, or git worktree orchestration engine this phase.
-- Request-count semantic: `llm_requests` counts observed provider responses — calls where the provider was contacted and returned a response (success or API error). Transport-level retries within a single logical call are not counted.
-- `terminate_run` helper signature is guidance — adapt to borrow-checker realities, preserve consolidation intent.
-- `--quiet` must never suppress errors; it only gates cosmetic lifecycle messages.
-- Stdout remains clean for command output and machine-readable JSON payloads.
-
 ## Phase 18 Outcomes
 
 Completed outcomes:
@@ -262,3 +241,24 @@ Locked decisions retained in implementation:
 - No patch mode, provider expansion, or git worktree orchestration engine.
 - `--quiet` remains cosmetic output policy only.
 - Stdout remains reserved for command output and JSON payloads.
+
+## Phase 19 Scope (Planned)
+
+Primary objective:
+- Use alpha validation to close the next trust gap: precision and evidence on medium and large Rust repos.
+- Improve operator visibility into what a run actually changed.
+- Keep scaling the product without weakening the deterministic safety model.
+
+Locked deliverables:
+1. **Deterministic changed-file evidence**: add run-level touched-file summaries to final/report surfaces without depending on git diff or external tools.
+2. **Context precision pass**: improve planner/editor context relevance for larger repos using deterministic, testable selection heuristics.
+3. **Alpha triage discipline**: align runtime/reporting changes with a repeatable operator test route and reporting template.
+4. **Contract-safe reporting growth**: protect any new output or stats fields with module and command-boundary tests.
+5. **Documentation and phase closure**.
+
+Design decisions locked for Phase 19:
+- No patch mode, provider expansion, or git worktree orchestration engine this phase.
+- Preserve path safety, transactional apply, checkpoint compatibility, and best-effort persistence behavior.
+- Any changed-file evidence must be derived from Tod's own applied edit data, not from VCS assumptions.
+- Context selection changes must remain deterministic and table-testable.
+- Stdout remains reserved for command output and machine-readable JSON payloads.
